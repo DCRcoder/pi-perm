@@ -13,16 +13,40 @@
 
 ## 安装与配置
 
+npm 包发布后，可以直接通过 Pi package catalog 安装。带有 `pi-package` keyword 的 npm 包在 catalog 索引后会出现在 <https://pi.dev/packages>：
+
+```bash
+pi install npm:pi-perm
+```
+
+如果只想从 npm 临时运行，不写入 settings：
+
+```bash
+pi -e npm:pi-perm
+```
+
+直接从 GitHub 安装：
+
+```bash
+pi install git:github.com/DCRcoder/pi-perm@main
+```
+
+从 GitHub 临时运行：
+
+```bash
+pi -e git:github.com/DCRcoder/pi-perm@main
+```
+
 如果需要启用 Sandbox Runtime 包装能力，需要先安装 `srt` 命令：
 
 ```bash
 npm install -g @anthropic-ai/sandbox-runtime
 ```
 
-从源码安装：
+从本地源码安装：
 
 ```bash
-git clone <repo-url> ~/.pi/agent/extensions/pi-perm
+git clone git@github.com:DCRcoder/pi-perm.git ~/.pi/agent/extensions/pi-perm
 cd ~/.pi/agent/extensions/pi-perm
 pnpm install
 cp config.example.toml config.toml

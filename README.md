@@ -19,16 +19,40 @@ This repository follows the Pi package convention: `package.json` declares the e
 
 ## Install And Configure
 
+Install from the Pi package catalog after the npm package is published. Packages with the `pi-package` keyword can be discovered on <https://pi.dev/packages> after the catalog indexes npm:
+
+```bash
+pi install npm:pi-perm
+```
+
+For a one-off run from npm without adding it to settings:
+
+```bash
+pi -e npm:pi-perm
+```
+
+Install directly from GitHub:
+
+```bash
+pi install git:github.com/DCRcoder/pi-perm@main
+```
+
+For a one-off run from GitHub:
+
+```bash
+pi -e git:github.com/DCRcoder/pi-perm@main
+```
+
 To enable Sandbox Runtime wrapping, install the `srt` command first:
 
 ```bash
 npm install -g @anthropic-ai/sandbox-runtime
 ```
 
-Install from source:
+Install from local source:
 
 ```bash
-git clone <repo-url> ~/.pi/agent/extensions/pi-perm
+git clone git@github.com:DCRcoder/pi-perm.git ~/.pi/agent/extensions/pi-perm
 cd ~/.pi/agent/extensions/pi-perm
 pnpm install
 cp config.example.toml config.toml

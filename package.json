@@ -1,0 +1,26 @@
+{
+  "name": "pi-perm",
+  "version": "0.1.0",
+  "description": "Config-driven Pi sandbox and permission extension using sandbox-runtime.",
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "keywords": ["pi-package", "pi-extension", "sandbox", "permissions"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "smol-toml": "^1.4.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.5.0"
+  }
+}

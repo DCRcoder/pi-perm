@@ -1,0 +1,130 @@
+version = 1
+activeProfile = "strict"
+
+[profiles.strict]
+description = "No network, no writes, and sensitive reads denied."
+
+[profiles.strict.sandbox.network]
+allowedDomains = []
+deniedDomains = []
+allowUnixSockets = []
+allowLocalBinding = false
+
+[profiles.strict.sandbox.filesystem]
+denyRead = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh/hosts.yml"]
+allowRead = []
+allowWrite = []
+denyWrite = [".env", ".env.*", ".git/config", ".git/hooks/**"]
+
+[profiles.strict.sandbox.ignoreViolations]
+
+[profiles.strict.sandbox]
+enableWeakerNestedSandbox = false
+enableWeakerNetworkIsolation = false
+allowAppleEvents = false
+
+[profiles.strict.toolDefaults]
+mode = "enforce"
+defaultAction = "confirm"
+
+[profiles.workspace]
+description = "Read the workspace, write only configured workspace paths, and keep network disabled."
+
+[profiles.workspace.sandbox.network]
+allowedDomains = []
+deniedDomains = []
+allowUnixSockets = []
+allowLocalBinding = false
+
+[profiles.workspace.sandbox.filesystem]
+denyRead = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh/hosts.yml"]
+allowRead = ["."]
+allowWrite = ["."]
+denyWrite = [".env", ".env.*", ".git/config", ".git/hooks/**"]
+
+[profiles.workspace.sandbox.ignoreViolations]
+
+[profiles.workspace.sandbox]
+enableWeakerNestedSandbox = false
+enableWeakerNetworkIsolation = false
+allowAppleEvents = false
+
+[profiles.workspace.toolDefaults]
+mode = "enforce"
+defaultAction = "confirm"
+
+[tools.bash]
+mode = "enforce"
+defaultAction = "confirm"
+wrapWithSrt = true
+srtBinary = "srt"
+
+[tools.bash.operations]
+preset = "recommended"
+block = ["~/.ssh/", "gh auth token", ".git/hooks"]
+confirm = [
+  "git push",
+  "git commit",
+  "git reset --hard",
+  "git clean",
+  "rm -r",
+  "sudo",
+  "curl | sh",
+  "wget | bash",
+  "scp",
+  "rsync",
+  "npm publish",
+  "pnpm publish",
+  "docker",
+  "kubectl",
+  "terraform",
+  "aws",
+  "gcloud",
+  "az",
+  "open",
+  "osascript"
+]
+
+[[tools.bash.rules]]
+id = "dangerous-shell-removal"
+action = "block"
+reason = "Command matches a configured destructive shell pattern."
+
+[tools.bash.rules.match]
+commandIncludes = ["rm -rf /", "sudo rm", "mkfs", "diskutil erase"]
+
+[tools.read]
+mode = "enforce"
+defaultAction = "allow"
+pathFields = ["path"]
+
+[tools.write]
+mode = "enforce"
+defaultAction = "confirm"
+pathFields = ["path", "file_path"]
+
+[tools.edit]
+mode = "enforce"
+defaultAction = "confirm"
+pathFields = ["path", "file_path"]
+
+[prompts]
+noUiAction = "block"
+confirmTitle = "Sandbox permission"
+confirmMessage = "Allow {toolName} for {target}?"
+
+[audit]
+enabled = true
+file = "audit.jsonl"
+
+[runtime]
+settingsDir = "runtime"
+
+[security]
+userOnlyElevations = [
+  "allowAppleEvents",
+  "enableWeakerNestedSandbox",
+  "enableWeakerNetworkIsolation",
+  "allowAllUnixSockets",
+  "allowDockerSocket"
+]

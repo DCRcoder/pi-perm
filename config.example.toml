@@ -1,0 +1,50 @@
+version = 1
+activeProfile = "workspace"
+
+[profiles.workspace]
+description = "Read the workspace, write only configured workspace paths, and keep network disabled."
+
+[profiles.workspace.sandbox.network]
+allowedDomains = []
+deniedDomains = []
+allowUnixSockets = []
+allowLocalBinding = false
+
+[profiles.workspace.sandbox.filesystem]
+denyRead = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh/hosts.yml"]
+allowRead = ["."]
+allowWrite = ["."]
+denyWrite = [".env", ".env.*", ".git/config", ".git/hooks/**"]
+
+[profiles.workspace.sandbox.ignoreViolations]
+
+[profiles.workspace.sandbox]
+enableWeakerNestedSandbox = false
+enableWeakerNetworkIsolation = false
+allowAppleEvents = false
+
+[profiles.workspace.toolDefaults]
+mode = "enforce"
+defaultAction = "confirm"
+
+[tools.bash]
+wrapWithSrt = true
+srtBinary = "srt"
+
+# Human-friendly operation policy:
+# - preset = "recommended" enables common defaults
+# - block/confirm/allow use command patterns users already know
+# - advanced is only for project-specific commands
+[tools.bash.operations]
+preset = "recommended"
+block = ["~/.ssh/", "gh auth token", ".git/hooks"]
+confirm = ["git push", "git commit", "rm -r", "curl | sh", "kubectl", "terraform", "docker"]
+allow = ["pnpm install"]
+
+[[tools.bash.operations.advanced]]
+id = "confirm-prod-deploy"
+category = "deployment"
+command = "pnpm"
+subcommands = ["deploy:prod"]
+action = "confirm"
+reason = "Production deploy requires confirmation."

@@ -3,8 +3,35 @@
   "version": "0.1.0",
   "description": "Config-driven Pi sandbox and permission extension using sandbox-runtime.",
   "type": "module",
+  "license": "MIT",
+  "author": "cold",
+  "homepage": "https://github.com/DCRcoder/pi-perm#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/DCRcoder/pi-perm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DCRcoder/pi-perm/issues"
+  },
   "packageManager": "pnpm@9.15.0",
-  "keywords": ["pi-package", "pi-extension", "sandbox", "permissions"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "coding-agent",
+    "sandbox",
+    "permissions",
+    "sandbox-runtime"
+  ],
+  "files": [
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "index.ts",
+    "core/",
+    "defaults/",
+    "config.example.toml"
+  ],
   "pi": {
     "extensions": ["./index.ts"]
   },

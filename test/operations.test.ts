@@ -4,8 +4,9 @@ import { normalizeOperations } from "../core/operations.ts";
 
 test("normalizeOperations expands recommended preset command patterns", () => {
   const rules = normalizeOperations({ preset: "recommended" });
-  assert.equal(rules.find((rule) => rule.id === "git.push").action, "confirm");
-  assert.equal(rules.find((rule) => rule.id === "credentials.read").action, "block");
+  assert.equal(rules.find((rule) => rule.id === "pattern:git push").action, "confirm");
+  assert.equal(rules.find((rule) => rule.id === "pattern:~/.ssh/").action, "block");
+  assert.deepEqual(rules.find((rule) => rule.id === "pattern:~/.ssh/").commandIncludes, ["~/.ssh/"]);
 });
 
 test("normalizeOperations lets command patterns override preset actions", () => {

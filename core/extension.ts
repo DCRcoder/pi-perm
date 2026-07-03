@@ -21,9 +21,6 @@ export function createPiPermExtension(options: any = {}) {
     handlePiPermCommand(args, ctx = {}) {
       return handlePiPermCommand(state, args, ctx);
     },
-    handleSandboxCommand(args, ctx = {}) {
-      return handlePiPermCommand(state, args, ctx);
-    },
     policySummary() {
       return summarizePolicy(state);
     }

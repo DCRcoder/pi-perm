@@ -1,4 +1,4 @@
-export const OPERATION_ALIASES = {
+export const BUILTIN_OPERATION_RULES = {
   "rm.recursive": {
     id: "rm.recursive",
     category: "destructive-file",
@@ -137,27 +137,52 @@ export const OPERATION_ALIASES = {
   }
 };
 
-export const OPERATION_PRESETS = {
+export const BUILTIN_OPERATION_PRESETS = {
   recommended: {
     confirm: [
-      "rm.recursive",
-      "find.delete",
-      "permission.recursive",
-      "git.push",
-      "git.commit",
-      "git.reset-hard",
-      "git.clean",
+      "rm -r",
+      "find -delete",
+      "chmod -R",
+      "chown -R",
+      "chflags -R",
+      "setfacl -R",
+      "git push",
+      "git commit",
+      "git reset --hard",
+      "git clean",
       "sudo",
-      "process.control",
-      "remote-script.*",
-      "network.*",
-      "deps.install",
-      "package.publish",
+      "su",
+      "kill",
+      "pkill",
+      "killall",
+      "launchctl",
+      "systemctl",
+      "curl | sh",
+      "wget | bash",
+      "eval",
+      "scp",
+      "rsync",
+      "sftp",
+      "nc",
+      "curl -T",
+      "npm install",
+      "pnpm install",
+      "yarn install",
+      "pip install",
+      "uv install",
+      "npm publish",
+      "pnpm publish",
       "docker",
-      "infra",
-      "system.automation"
+      "podman",
+      "kubectl",
+      "terraform",
+      "aws",
+      "gcloud",
+      "az",
+      "open",
+      "osascript"
     ],
-    block: ["git.hooks", "credentials.read"],
+    block: ["~/.ssh/", "gh auth token", "security find-generic-password", ".git/hooks", ".gitmodules"],
     allow: []
   }
 };
@@ -168,7 +193,7 @@ export function normalizeOperations(value: any): any[] {
 
   const policy = typeof value === "string" ? { preset: value } : value;
   const rules = new Map();
-  const preset = OPERATION_PRESETS[policy.preset] ?? { confirm: [], block: [], allow: [] };
+  const preset = BUILTIN_OPERATION_PRESETS[policy.preset] ?? { confirm: [], block: [], allow: [] };
 
   applyOperationGroup(rules, preset.confirm, "confirm");
   applyOperationGroup(rules, preset.block, "block");
@@ -186,13 +211,12 @@ export function normalizeOperations(value: any): any[] {
 
 function applyOperationGroup(rules: Map<string, any>, entries: any[] = [], action: string) {
   for (const entry of entries) {
-    const rawToken = typeof entry === "string" ? entry : entry.alias ?? entry.command;
+    const rawToken = typeof entry === "string" ? entry : entry.command;
     const tokens = expandOperationToken(rawToken);
     for (const token of tokens) {
-      const template = OPERATION_ALIASES[token] ?? operationPatternToRule(token);
+      const template = BUILTIN_OPERATION_RULES[token] ?? operationPatternToRule(token);
       if (!template) continue;
       const rule = { ...template, ...(typeof entry === "object" ? entry : {}), id: template.id, action };
-      delete rule.alias;
       rules.set(rule.id, rule);
     }
   }
@@ -202,7 +226,7 @@ function expandOperationToken(token: string) {
   if (!token) return [];
   if (!token.endsWith(".*")) return [token];
   const prefix = token.slice(0, -1);
-  return Object.keys(OPERATION_ALIASES).filter((key) => key.startsWith(prefix));
+  return Object.keys(BUILTIN_OPERATION_RULES).filter((key) => key.startsWith(prefix));
 }
 
 function operationPatternToRule(pattern: string) {
@@ -223,6 +247,14 @@ function operationPatternToRule(pattern: string) {
   const argv = splitPattern(trimmed);
   const command = argv[0];
   const rest = argv.slice(1);
+  if (isCommandFragment(trimmed, command)) {
+    return {
+      id: `pattern:${trimmed}`,
+      category: "command-fragment",
+      commandIncludes: [trimmed],
+      reason: `Command fragment '${trimmed}' requires permission.`
+    };
+  }
   return {
     id: `pattern:${trimmed}`,
     category: "command-pattern",
@@ -235,4 +267,8 @@ function operationPatternToRule(pattern: string) {
 
 function splitPattern(pattern: string) {
   return pattern.split(/\s+/).filter(Boolean);
+}
+
+function isCommandFragment(pattern: string, command: string) {
+  return pattern.includes("/") || pattern.startsWith(".") || pattern.startsWith("~") || !/^[A-Za-z0-9_-]+$/.test(command);
 }

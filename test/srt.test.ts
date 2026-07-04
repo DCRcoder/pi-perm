@@ -23,7 +23,8 @@ test("toSrtSettings maps profile sandbox to sandbox-runtime settings", () => {
 
 test("writeSrtSettings writes settings under configured runtime directory", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-srt-"));
-  const file = writeSrtSettings({ profile, cwd, runtimeDir: "runtime", toolCallId: "call/1" });
+  const settingsDir = path.join(cwd, "runtime");
+  const file = writeSrtSettings({ profile, settingsDir, toolCallId: "call/1" });
   assert.equal(file.includes("runtime"), true);
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).network.allowedDomains[0], "github.com");
 });

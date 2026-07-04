@@ -47,6 +47,20 @@ confirm = ["git push", "npm publish"]
 enabled = false
 `;
 
+const confirmBashWithTtlConfig = `
+${confirmBashConfig}
+
+[runtime]
+sessionAllowTtlMs = 100
+`;
+
+const confirmBashWithoutSessionReuseConfig = `
+${confirmBashConfig}
+
+[runtime]
+sessionAllowTtlMs = 0
+`;
+
 const confirmFileConfig = `
 version = 1
 activeProfile = "workspace"
@@ -123,6 +137,7 @@ enabled = false
 
 test("handleToolCall wraps bash command with srt when configured", async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-ext-"));
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-runtime-base-"));
   const root = cwd;
   fs.mkdirSync(path.join(root, "defaults"), { recursive: true });
   fs.writeFileSync(
@@ -159,12 +174,60 @@ enabled = false
 settingsDir = "runtime"
 `
   );
-  const extension = createPiPermExtension({ cwd, extensionRoot: root, userPath: path.join(cwd, "missing.json"), commandExists: () => true });
+  const extension = createPiPermExtension({ cwd, extensionRoot: root, userPath: path.join(cwd, "missing.json"), runtimeBaseDir, commandExists: () => true });
   const event = { toolName: "bash", toolCallId: "abc", input: { command: "echo ok" } };
   const result = await extension.handleToolCall(event, {});
   assert.equal(result, undefined);
   assert.match(event.input.command, /^srt --settings /);
   assert.match(event.input.command, / echo ok$/);
+  assert.equal(fs.existsSync(path.join(runtimeBaseDir, "runtime", "abc.srt-settings.json")), true);
+  assert.equal(fs.existsSync(path.join(cwd, "runtime")), false);
+});
+
+test("relative runtime settingsDir is resolved under runtime base dir", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-ext-"));
+  const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-runtime-base-"));
+  const root = cwd;
+  fs.mkdirSync(path.join(root, "defaults"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "defaults/base.toml"),
+    `
+version = 1
+activeProfile = "workspace"
+
+[profiles.workspace.sandbox.network]
+allowedDomains = []
+deniedDomains = []
+allowUnixSockets = []
+
+[profiles.workspace.sandbox.filesystem]
+denyRead = []
+allowRead = ["."]
+allowWrite = ["."]
+denyWrite = []
+
+[profiles.workspace.toolDefaults]
+mode = "enforce"
+defaultAction = "allow"
+
+[tools.bash]
+mode = "enforce"
+defaultAction = "allow"
+wrapWithSrt = true
+srtBinary = "srt"
+
+[audit]
+enabled = false
+
+[runtime]
+settingsDir = "state/srt"
+`
+  );
+  const extension = createPiPermExtension({ cwd, extensionRoot: root, userPath: path.join(cwd, "missing.json"), runtimeBaseDir, commandExists: () => true });
+  const event = { toolName: "bash", toolCallId: "nested", input: { command: "echo ok" } };
+  assert.equal(await extension.handleToolCall(event, {}), undefined);
+  assert.equal(fs.existsSync(path.join(runtimeBaseDir, "state/srt", "nested.srt-settings.json")), true);
+  assert.equal(fs.existsSync(path.join(cwd, "state")), false);
 });
 
 test("pi-perm command switches only to configured profiles", () => {
@@ -244,6 +307,44 @@ test("confirm allow session skips repeated prompts for the same target", async (
   assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
   assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
   assert.equal(prompts, 1);
+});
+
+test("confirm allow session expires after idle ttl", async () => {
+  let now = 1000;
+  const extension = createExtensionFixture(confirmBashWithTtlConfig, { now: () => now });
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async () => {
+        prompts += 1;
+        return "Always allow this session";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
+  now += 50;
+  assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
+  now += 101;
+  assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
+  assert.equal(prompts, 2);
+});
+
+test("non-positive session ttl disables allow session reuse", async () => {
+  const extension = createExtensionFixture(confirmBashWithoutSessionReuseConfig);
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async () => {
+        prompts += 1;
+        return "Always allow this session";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "bash", input: { command: "git push origin main" } }, ctx), undefined);
+  assert.equal(prompts, 2);
 });
 
 test("confirm allow session does not apply to different targets", async () => {

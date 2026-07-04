@@ -128,7 +128,7 @@ flowchart TD
   P -->|拒绝| O
   P -->|允许| Q{bash 且 wrapWithSrt?}
   N -->|allow| Q
-  Q -->|是| R[生成 runtime/*.srt-settings.json]
+  Q -->|是| R[生成 extension 数据目录下的 SRT settings]
   R --> S[改写 command 为 srt --settings ...]
   Q -->|否| T[放行原工具调用]
   S --> T
@@ -172,9 +172,9 @@ Pi Agent 触发 `session_start` 后，[index.ts](../index.ts) 通过 `ctx.ui.not
 
 ### 5.2.1 Session 级授权
 
-[core/extension.ts](../core/extension.ts) 在 extension state 中维护 `sessionAllows` 内存集合。用户选择“本 session 始终允许”后，系统按当前 active profile、工具名、命中的规则 ID 或操作 ID、目标摘要生成授权 key，并只在当前 extension 实例生命周期内复用。
+[core/extension.ts](../core/extension.ts) 在 extension state 中维护 `sessionAllows` 内存 Map。用户选择“本 session 始终允许”后，系统按当前 active profile、工具名、命中的规则 ID 或操作 ID、目标摘要生成授权 key，并记录最近使用时间。
 
-该授权不会写入 `config.toml`、`config.json` 或用户配置，因此重启 Pi session 后自动失效。重复命中相同 key 时，系统跳过确认并记录 `session_allow_hit` 审计事件；不同 profile、不同命令、不同规则或不同路径仍会重新确认。执行 `/pi-perm use <profile>` 切换 profile 时，系统会清空当前 session 授权缓存。
+该授权不会写入 `config.toml`、`config.json` 或用户配置，因此重启 Pi session 后自动失效。每次工具调用前系统会按 `runtime.sessionAllowTtlMs` 清理空闲过期授权；重复命中相同 key 且未过期时，系统跳过确认、刷新最近使用时间并记录 `session_allow_hit` 审计事件。不同 profile、不同命令、不同规则或不同路径仍会重新确认。执行 `/pi-perm use <profile>` 切换 profile 时，系统会清空当前 session 授权缓存。
 
 确认提示由 `core/extension.ts:confirmDecision()` 统一包裹 UI 状态保护。扩展初始化时会从 `index.ts` 注入 `pi.events`。显示选择器前会调用 `events.emit("herdr:blocked", { active: true, label })`、`ctx.ui.setStatus("pi-perm", "blocked: waiting for permission")`、`ctx.ui.setWorkingMessage(...)` 和 `ctx.ui.setWorkingIndicator({ frames: ["■"] })`；无论用户选择、取消还是 UI 抛错，都会在 `finally` 中发送 `active: false` 并恢复默认状态。缺少 event bus 或 Herdr integration 时不影响权限确认。Herdr 的 `done` 是 `idle + pane 未查看` 的 UI 派生状态，pi-perm 不直接发送 done 事件。
 
@@ -198,10 +198,12 @@ Pi Agent 触发 `session_start` 后，[index.ts](../index.ts) 通过 `ctx.ui.not
 
 ### 5.4 SRT 沙盒包装
 
-当 `bash` 策略启用 `wrapWithSrt` 时，[core/srt.ts](../core/srt.ts) 会把当前 profile 的 `sandbox` 配置写入 `runtime/<tool-call-id>.srt-settings.json`，再将原始命令改写为：
+当 `bash` 策略启用 `wrapWithSrt` 时，[core/extension.ts](../core/extension.ts) 会先解析 pi-perm extension 运行时目录。默认基目录为 `~/.pi/agent/extensions/pi-perm`，`runtime.settingsDir` 只表示该基目录下的相对子目录，默认 `runtime`。绝对 `runtime.settingsDir` 会被配置校验拒绝，避免 SRT settings 回落到项目目录或任意路径。
+
+[core/srt.ts](../core/srt.ts) 会把当前 profile 的 `sandbox` 配置写入 `~/.pi/agent/extensions/pi-perm/runtime/<tool-call-id>.srt-settings.json`，再将原始命令改写为：
 
 ```bash
-srt --settings runtime/<tool-call-id>.srt-settings.json <original command>
+srt --settings ~/.pi/agent/extensions/pi-perm/runtime/<tool-call-id>.srt-settings.json <original command>
 ```
 
 这样命令操作审批和 OS 级沙盒会串联生效：先确认/阻断高风险操作，再由 Sandbox Runtime 限制实际进程访问文件、网络和 socket。
@@ -219,7 +221,7 @@ srt --settings runtime/<tool-call-id>.srt-settings.json <original command>
 | `tools.bash.operations` | 命令操作权限，支持 `preset`、`block`、`confirm`、`allow`、`advanced` |
 | `prompts` | UI 确认文案和 UI 不可用时的动作 |
 | `audit` | 审计开关和日志文件 |
-| `runtime` | SRT settings 输出目录 |
+| `runtime` | pi-perm 运行时状态配置，包括 `baseDir`、`settingsDir` 和 `sessionAllowTtlMs` |
 | `security` | user-only 高风险能力声明 |
 
 ### 6.2 审计记录
@@ -242,7 +244,7 @@ srt --settings runtime/<tool-call-id>.srt-settings.json <original command>
 | `bash` 命令 | 可被操作权限确认/阻断，也可被 SRT 包装 |
 | 文件工具 | `read`、`write`、`edit` 会按路径策略判定 |
 | 用户交互 | `confirm` 规则会弹出确认；UI 不可用时默认按配置阻断 |
-| 运行时文件 | 会生成 `runtime/*.srt-settings.json` 和 `audit.jsonl` |
+| 运行时文件 | SRT settings 写入 `~/.pi/agent/extensions/pi-perm/runtime/`；审计日志默认仍写入 `audit.jsonl` |
 | 外部依赖 | 需要 Pi Agent extension API；SRT 包装需要本机存在 `srt` 命令 |
 
 ## 8. 验证

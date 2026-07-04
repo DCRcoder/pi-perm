@@ -48,3 +48,8 @@ command = "pnpm"
 subcommands = ["deploy:prod"]
 action = "confirm"
 reason = "Production deploy requires confirmation."
+
+[runtime]
+baseDir = "~/.pi/agent/extensions/pi-perm"
+settingsDir = "runtime"
+sessionAllowTtlMs = 1800000

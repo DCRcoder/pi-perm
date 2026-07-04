@@ -118,7 +118,9 @@ enabled = true
 file = "audit.jsonl"
 
 [runtime]
+baseDir = "~/.pi/agent/extensions/pi-perm"
 settingsDir = "runtime"
+sessionAllowTtlMs = 1800000
 
 [security]
 userOnlyElevations = [

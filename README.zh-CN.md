@@ -7,7 +7,7 @@
 - Extension 入口：`index.ts`
 - 项目配置：优先使用 `config.toml`，兼容 `config.json`
 - 用户覆盖配置：优先使用 `~/.pi/agent/extensions/pi-perm/config.toml`，兼容 JSON
-- SRT 运行时配置输出：`runtime/`
+- SRT 运行时配置输出：`~/.pi/agent/extensions/pi-perm/runtime/`
 
 本项目遵循 Pi package 约定：`package.json` 通过 `pi.extensions: ["./index.ts"]` 声明 extension 入口，因此仓库根目录就是 extension package 根目录。
 
@@ -63,6 +63,8 @@ pi -e ./index.ts
 ```
 
 项目配置推荐使用 `config.toml`。JSON 仍然保留兼容支持。项目配置可以定义权限策略，但 Apple Events、弱沙盒模式、全部 Unix socket、Docker socket 等高风险能力必须由用户级配置显式授权，不能仅靠项目配置开启。
+
+运行时文件属于 extension 状态，不属于当前项目文件。`runtime.settingsDir` 始终解析到 `runtime.baseDir` 下且必须是相对路径；pi-perm 不会为了 SRT settings 在当前项目目录创建或使用 `runtime/`。
 
 ## 操作权限
 

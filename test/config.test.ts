@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applySecurityBoundary, deepMerge, loadConfig } from "../core/config.ts";
+import { applySecurityBoundary, deepMerge, loadConfig, resolveRuntimeBaseDir, resolveSrtSettingsDir } from "../core/config.ts";
 
 test("deepMerge overrides nested objects without inventing policy values", () => {
   const merged = deepMerge(
@@ -123,4 +123,56 @@ block = ["gh auth token"]
   assert.equal(loaded.config.tools.bash.srtBinary, "toml-srt");
   assert.equal(loaded.config.tools.bash.operations.find((rule) => rule.id === "pattern:pnpm install").action, "allow");
   assert.equal(loaded.config.tools.bash.operations.find((rule) => rule.id === "pattern:gh auth token").action, "block");
+});
+
+test("runtime settingsDir must be relative to runtime base dir", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-runtime-config-"));
+  const extensionRoot = dir;
+  fs.mkdirSync(path.join(extensionRoot, "defaults"), { recursive: true });
+  fs.writeFileSync(
+    path.join(extensionRoot, "defaults/base.toml"),
+    `
+version = 1
+activeProfile = "strict"
+
+[profiles.strict.sandbox.network]
+allowedDomains = []
+deniedDomains = []
+allowUnixSockets = []
+
+[profiles.strict.sandbox.filesystem]
+denyRead = []
+allowRead = []
+allowWrite = []
+denyWrite = []
+
+[tools]
+
+[runtime]
+settingsDir = "${path.join(os.tmpdir(), "pi-perm-absolute-settings").replaceAll("\\", "\\\\")}"
+`
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        cwd: dir,
+        extensionRoot,
+        userPath: path.join(dir, "missing-user.toml")
+      }),
+    /runtime\.settingsDir must be a relative path/
+  );
+});
+
+test("runtime directory helpers resolve settings under extension data dir", () => {
+  const config = { runtime: { baseDir: "~/pi-perm-state", settingsDir: "state/srt" } };
+  const baseDir = resolveRuntimeBaseDir(config);
+  assert.equal(baseDir, path.join(os.homedir(), "pi-perm-state"));
+  assert.equal(resolveSrtSettingsDir(config, baseDir), path.join(os.homedir(), "pi-perm-state", "state/srt"));
+});
+
+test("runtime settingsDir cannot escape runtime base dir", () => {
+  assert.throws(
+    () => resolveSrtSettingsDir({ runtime: { settingsDir: "../outside" } }, path.join(os.tmpdir(), "pi-perm-base")),
+    /runtime\.settingsDir must stay under runtime\.baseDir/
+  );
 });

@@ -1,18 +1,22 @@
 import path from "node:path";
-import { loadConfig, getActiveProfile } from "./config.ts";
+import { loadConfig, getActiveProfile, resolveRuntimeBaseDir, resolveSrtSettingsDir } from "./config.ts";
 import { auditEvent } from "./audit.ts";
 import { evaluateFileAccess, evaluateToolCall, summarizePolicy } from "./policy.ts";
 import { commandExists, wrapCommandWithSrt, writeSrtSettings } from "./srt.ts";
 
 export function createPiPermExtension(options: any = {}) {
   const loaded = loadConfig(options);
+  const runtimeBaseDir = resolveRuntimeBaseDir(loaded.config, options);
   const state = {
     config: loaded.config,
     activeProfile: loaded.config.activeProfile,
     cwd: options.cwd ?? process.cwd(),
+    runtimeBaseDir,
+    srtSettingsDir: resolveSrtSettingsDir(loaded.config, runtimeBaseDir),
+    now: options.now ?? (() => Date.now()),
     commandExists: options.commandExists ?? commandExists,
     events: options.events,
-    sessionAllows: new Set<string>()
+    sessionAllows: new Map<string, { lastUsedAt: number }>()
   };
   for (const event of loaded.audit) auditEvent(state.config, event, state.cwd);
   return {
@@ -30,6 +34,8 @@ export function createPiPermExtension(options: any = {}) {
 }
 
 export async function handleToolCall(state: any, event: any, ctx: any = {}) {
+  // 实现参考：Extension 运行时状态目录 / Session 授权空闲过期
+  pruneExpiredSessionAllows(state);
   const profile = getActiveProfile(state);
   const toolName = event.toolName;
   const input = event.input ?? {};
@@ -47,14 +53,18 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
   if (decision.action === "confirm") {
     const target = decision.target ?? input.command ?? toolName;
     const sessionKey = createSessionAllowKey(state.activeProfile, toolName, decision, target);
-    if (state.sessionAllows.has(sessionKey)) {
+    const sessionAllow = state.sessionAllows.get(sessionKey);
+    if (sessionAllow) {
+      sessionAllow.lastUsedAt = state.now();
       auditEvent(state.config, { type: "session_allow_hit", toolName, target, key: sessionKey }, state.cwd);
     } else {
       const result = await confirmDecision(ctx, state.config, state.events, toolName, target);
       const ok = result.action === "allow_once" || result.action === "allow_session";
       auditEvent(state.config, { type: "confirm", toolName, allowed: ok, target, scope: result.action, key: result.action === "allow_session" ? sessionKey : undefined, expires: result.action === "allow_session" ? "session" : "call" }, state.cwd);
       if (!ok) return { block: true, reason: `Denied by user: ${toolName}` };
-      if (result.action === "allow_session") state.sessionAllows.add(sessionKey);
+      if (result.action === "allow_session" && getSessionAllowTtlMs(state) > 0) {
+        state.sessionAllows.set(sessionKey, { lastUsedAt: state.now() });
+      }
     }
   }
 
@@ -65,10 +75,9 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
       ctx.ui?.notify?.(reason, "error");
       return { block: true, reason };
     }
-    const runtimeDir = state.config.runtime?.settingsDir ?? "runtime";
-    const settingsPath = writeSrtSettings({ profile, cwd: state.cwd, runtimeDir, toolCallId: event.toolCallId ?? "bash" });
+    const settingsPath = writeSrtSettings({ profile, settingsDir: state.srtSettingsDir, toolCallId: event.toolCallId ?? "bash" });
     event.input.command = wrapCommandWithSrt(input.command, settingsPath, decision.policy.srtBinary ?? "srt");
-    auditEvent(state.config, { type: "srt_settings", toolName, settingsPath: path.relative(state.cwd, settingsPath) }, state.cwd);
+    auditEvent(state.config, { type: "srt_settings", toolName, settingsPath: formatAuditPath(state.cwd, settingsPath) }, state.cwd);
   }
 
   return undefined;
@@ -138,6 +147,28 @@ async function confirmDecision(ctx: any, config: any, events: any, toolName: str
 function createSessionAllowKey(profileName: string, toolName: string, decision: any, target: any) {
   const ruleId = decision.rule?.id ?? decision.operation?.id;
   return [profileName, toolName, ruleId ?? "target", String(target)].join(":");
+}
+
+function pruneExpiredSessionAllows(state: any) {
+  const ttl = getSessionAllowTtlMs(state);
+  if (ttl <= 0) {
+    state.sessionAllows.clear();
+    return;
+  }
+  const now = state.now();
+  for (const [key, value] of state.sessionAllows.entries()) {
+    if (now - value.lastUsedAt > ttl) state.sessionAllows.delete(key);
+  }
+}
+
+function getSessionAllowTtlMs(state: any) {
+  const ttl = state.config.runtime?.sessionAllowTtlMs;
+  return typeof ttl === "number" ? ttl : 30 * 60 * 1000;
+}
+
+function formatAuditPath(cwd: string, filePath: string) {
+  const relative = path.relative(cwd, filePath);
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : filePath;
 }
 
 function setPermissionBlockedStatus(ctx: any, events: any, toolName: string, target: any) {

@@ -7,7 +7,7 @@ import { createPiPermExtension } from "./core/extension.ts";
 const extensionRoot = path.dirname(fileURLToPath(import.meta.url));
 
 export default function (pi: ExtensionAPI) {
-  const extension = createPiPermExtension({ extensionRoot });
+  const extension = createPiPermExtension({ extensionRoot, events: pi.events });
 
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify(`pi-perm loaded: ${extension.state.activeProfile}`, "info");

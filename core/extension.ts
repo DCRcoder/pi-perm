@@ -10,7 +10,9 @@ export function createPiPermExtension(options: any = {}) {
     config: loaded.config,
     activeProfile: loaded.config.activeProfile,
     cwd: options.cwd ?? process.cwd(),
-    commandExists: options.commandExists ?? commandExists
+    commandExists: options.commandExists ?? commandExists,
+    events: options.events,
+    sessionAllows: new Set<string>()
   };
   for (const event of loaded.audit) auditEvent(state.config, event, state.cwd);
   return {
@@ -43,9 +45,17 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
   }
 
   if (decision.action === "confirm") {
-    const ok = await confirmDecision(ctx, state.config, toolName, decision.target ?? input.command ?? toolName);
-    auditEvent(state.config, { type: "confirm", toolName, allowed: ok, target: decision.target ?? input.command }, state.cwd);
-    if (!ok) return { block: true, reason: `Denied by user: ${toolName}` };
+    const target = decision.target ?? input.command ?? toolName;
+    const sessionKey = createSessionAllowKey(state.activeProfile, toolName, decision, target);
+    if (state.sessionAllows.has(sessionKey)) {
+      auditEvent(state.config, { type: "session_allow_hit", toolName, target, key: sessionKey }, state.cwd);
+    } else {
+      const result = await confirmDecision(ctx, state.config, state.events, toolName, target);
+      const ok = result.action === "allow_once" || result.action === "allow_session";
+      auditEvent(state.config, { type: "confirm", toolName, allowed: ok, target, scope: result.action, key: result.action === "allow_session" ? sessionKey : undefined, expires: result.action === "allow_session" ? "session" : "call" }, state.cwd);
+      if (!ok) return { block: true, reason: `Denied by user: ${toolName}` };
+      if (result.action === "allow_session") state.sessionAllows.add(sessionKey);
+    }
   }
 
   if (toolName === "bash" && decision.policy.wrapWithSrt) {
@@ -82,6 +92,7 @@ export function handlePiPermCommand(state: any, args = "", ctx: any = {}) {
       return { ok: false, profiles };
     }
     state.activeProfile = profileName;
+    state.sessionAllows.clear();
     auditEvent(state.config, { type: "profile_switch", profile: profileName }, state.cwd);
     notify(ctx, `pi-perm profile: ${profileName}`);
     return { ok: true, activeProfile: profileName };
@@ -95,12 +106,60 @@ export function handlePiPermCommand(state: any, args = "", ctx: any = {}) {
   return { ok: false };
 }
 
-async function confirmDecision(ctx: any, config: any, toolName: string, target: any) {
-  if (!ctx.ui?.confirm) return config.prompts?.noUiAction === "allow";
+async function confirmDecision(ctx: any, config: any, events: any, toolName: string, target: any): Promise<{ action: "deny" | "allow_once" | "allow_session" }> {
   const title = config.prompts?.confirmTitle ?? "Sandbox permission";
   const template = config.prompts?.confirmMessage ?? "Allow {toolName} for {target}?";
   const message = template.replaceAll("{toolName}", toolName).replaceAll("{target}", String(target));
-  return ctx.ui.confirm(title, message);
+  const restore = setPermissionBlockedStatus(ctx, events, toolName, target);
+  try {
+    if (ctx.ui?.select) {
+      return normalizeConfirmSelection(await ctx.ui.select(`${title}\n${message}`, [
+        "Deny",
+        "Allow once",
+        "Always allow this session"
+      ]));
+    }
+    if (ctx.ui?.prompt) {
+      return normalizeConfirmSelection(await ctx.ui.prompt(title, message, {
+        choices: [
+          { label: "Deny", value: "deny" },
+          { label: "Allow once", value: "allow_once" },
+          { label: "Always allow this session", value: "allow_session" }
+        ]
+      }));
+    }
+    if (!ctx.ui?.confirm) return { action: config.prompts?.noUiAction === "allow" ? "allow_once" : "deny" };
+    return { action: await ctx.ui.confirm(title, message) ? "allow_once" : "deny" };
+  } finally {
+    restore();
+  }
+}
+
+function createSessionAllowKey(profileName: string, toolName: string, decision: any, target: any) {
+  const ruleId = decision.rule?.id ?? decision.operation?.id;
+  return [profileName, toolName, ruleId ?? "target", String(target)].join(":");
+}
+
+function setPermissionBlockedStatus(ctx: any, events: any, toolName: string, target: any) {
+  const label = `pi-perm permission (${toolName}: ${String(target)})`;
+  events?.emit?.("herdr:blocked", { active: true, label });
+  ctx.ui?.setStatus?.("pi-perm", "blocked: waiting for permission");
+  ctx.ui?.setWorkingMessage?.(`Blocked: waiting for ${label}`);
+  ctx.ui?.setWorkingIndicator?.({ frames: ["■"] });
+  return () => {
+    events?.emit?.("herdr:blocked", { active: false, label });
+    ctx.ui?.setStatus?.("pi-perm", undefined);
+    ctx.ui?.setWorkingMessage?.();
+    ctx.ui?.setWorkingIndicator?.();
+  };
+}
+
+function normalizeConfirmSelection(selection: any): { action: "deny" | "allow_once" | "allow_session" } {
+  const value = typeof selection === "string" ? selection : selection?.value ?? selection?.action ?? selection?.id;
+  const normalized = typeof value === "string" ? value.toLowerCase().replaceAll(" ", "_") : value;
+  if (normalized === "allow_session" || normalized === "always_allow_this_session" || normalized === "session" || normalized === "always") return { action: "allow_session" };
+  if (normalized === "allow_once" || normalized === "allow" || normalized === true) return { action: "allow_once" };
+  return { action: "deny" };
 }
 
 function notify(ctx: any, message: string, level = "info") {

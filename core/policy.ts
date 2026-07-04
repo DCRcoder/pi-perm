@@ -176,7 +176,8 @@ export function evaluateFileAccess({ config, profile, toolName, input, cwd = pro
       return { action: "block", policy, target, reason: `Path denied by filesystem policy: ${target}` };
     }
   }
-  return evaluateToolCall({ config, profile, toolName, input });
+  const decision = evaluateToolCall({ config, profile, toolName, input });
+  return { ...decision, target: decision.target ?? targets.join(", ") };
 }
 
 export function normalizeForMatch(target: string, cwd: string) {

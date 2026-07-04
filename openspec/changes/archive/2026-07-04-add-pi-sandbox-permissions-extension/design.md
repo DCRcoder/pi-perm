@@ -143,11 +143,49 @@ type OperationRule = {
 3. `mode = off` 时直接放行；`mode = observe` 时只审计不阻断；`mode = enforce` 时执行规则判定。
 4. 对 `bash` 先解析命令文本为保守的 shell operation 摘要，并匹配 `operations`，例如 `rm -rf`、`git push`、`git reset --hard`、`sudo`、`pnpm install`。
 5. 命中 `block` 返回 `{ block: true, reason }`。
-6. 命中 `confirm` 时调用 `ctx.ui.confirm`；用户拒绝则阻断，用户同意则按配置记录 `allowOnce` 或 session 级授权。
-7. 对 `bash` 且 `wrapWithSrt = true` 时，生成当前 profile 对应的临时 SRT settings 文件，将 `event.input.command` 改写为配置中的 `srtBinary` 包装命令。
-8. 对文件类工具从入参提取路径，按 `filesystem` 与工具规则判定；路径字段映射由配置的 tool extractor 或内置 schema 配置声明。
+6. 命中 `confirm` 时先检查当前 extension 实例的 session 授权缓存；命中缓存则直接放行并写审计。
+7. 未命中 session 授权缓存时优先调用可返回选项的 `ctx.ui.select` / `ctx.ui.prompt`，提供“拒绝”、“允许一次”、“本 session 始终允许”三个动作；运行环境只有 `ctx.ui.confirm` 时保持兼容，只支持拒绝或允许一次。
+8. 用户选择“本 session 始终允许”时，只在内存中记录授权，不写入配置文件或磁盘持久化。授权 key 由当前 active profile、`toolName`、命中的规则 ID 或操作 ID、以及目标摘要组成；无规则 ID 时退化为 `profile + toolName + target`，避免把一次授权扩大到不同 profile、命令或路径。
+9. 对 `bash` 且 `wrapWithSrt = true` 时，生成当前 profile 对应的临时 SRT settings 文件，将 `event.input.command` 改写为配置中的 `srtBinary` 包装命令。
+10. 对文件类工具从入参提取路径，按 `filesystem` 与工具规则判定；路径字段映射由配置的 tool extractor 或内置 schema 配置声明。
 
-### 4.1 命令操作策略
+### 4.1 Session 级确认授权
+
+确认授权分为一次性授权和当前 session 授权：
+
+| 动作 | 生效范围 | 持久化 | 行为 |
+| --- | --- | --- | --- |
+| 拒绝 | 当前工具调用 | 否 | 返回 `{ block: true }` 并记录拒绝审计 |
+| 允许一次 | 当前工具调用 | 否 | 放行当前调用，下一次命中同一规则仍需确认 |
+| 本 session 始终允许 | 当前 extension 实例 | 否 | 当前 Pi session 内同一授权 key 直接放行 |
+
+session 授权缓存存在于 `createPiPermExtension()` 返回对象的 `state.sessionAllows` 中，类型为 `Set<string>`。该缓存随 extension 实例销毁而失效，不从配置加载，不写入审计文件以外的持久化位置。
+
+授权 key 生成规则：
+
+```ts
+type SessionAllowSource = {
+  profileName: string;
+  toolName: string;
+  ruleId?: string;
+  operationId?: string;
+  target: string;
+};
+
+const key = `${profileName}:${toolName}:${ruleId ?? operationId ?? "target"}:${target}`;
+```
+
+`target` 使用当前决策对象的 `target`，否则使用 `input.command`，最后退化为 `toolName`。命令操作优先使用 `operation.id`，文件或工具规则优先使用 `rule.id`。这保证 `npm publish` 的 session 授权不会自动放行 `git push`、`rm -rf`、不同路径的文件写入或切换 profile 后的同名规则。
+
+执行 `/pi-perm use <profile>` 切换 profile 时，系统清空当前 session 授权缓存，避免旧 profile 下的授权继续影响新 profile。
+
+审计要求：
+
+- 首次确认记录用户选择、授权范围和过期条件。
+- 命中 session 授权缓存时记录 `session_allow_hit`，包含 `toolName`、授权 key 和目标摘要。
+- UI 不支持多选时继续调用 `ctx.ui.confirm`，确认成功视为“允许一次”，不写入 session 授权缓存。
+
+### 4.2 命令操作策略
 
 命令操作策略是 Pi 权限层能力，不依赖 sandbox-runtime。默认配置以 `tools.bash.operations` 声明常见高风险操作：
 

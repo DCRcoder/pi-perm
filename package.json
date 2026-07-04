@@ -1,6 +1,6 @@
 {
   "name": "pi-perm",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Config-driven Pi sandbox and permission extension using sandbox-runtime.",
   "type": "module",
   "license": "MIT",
@@ -8,7 +8,7 @@
   "homepage": "https://github.com/DCRcoder/pi-perm#readme",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/DCRcoder/pi-perm.git"
+    "url": "git+https://github.com/DCRcoder/pi-perm.git"
   },
   "bugs": {
     "url": "https://github.com/DCRcoder/pi-perm/issues"
@@ -33,7 +33,9 @@
     "config.example.toml"
   ],
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "scripts": {
     "test": "node --import tsx --test \"test/*.test.ts\"",

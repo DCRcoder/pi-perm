@@ -13,7 +13,7 @@
 - Extension entry: `index.ts`
 - Project config: `config.toml` first, with `config.json` compatibility
 - User override config: `~/.pi/agent/extensions/pi-perm/config.toml` first, with JSON compatibility
-- SRT runtime settings output: `runtime/`
+- SRT runtime settings output: `~/.pi/agent/extensions/pi-perm/runtime/`
 
 This repository follows the Pi package convention: `package.json` declares the extension entry through `pi.extensions: ["./index.ts"]`, so the repository root is the extension package root.
 
@@ -69,6 +69,8 @@ pi -e ./index.ts
 ```
 
 Project configuration should use `config.toml`. JSON remains supported for compatibility. Project config can define permission policies, but high-risk capabilities such as Apple Events, weak sandbox mode, unrestricted Unix sockets, and Docker socket access must be explicitly allowed by user-level config. They cannot be enabled by project config alone.
+
+Runtime files are extension state, not project files. `runtime.settingsDir` is always resolved under `runtime.baseDir` and must be relative; pi-perm does not create or use a `runtime/` directory in the current project for SRT settings.
 
 ## Operation Permissions
 

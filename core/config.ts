@@ -5,6 +5,7 @@ import { parse as parseToml } from "smol-toml";
 import { normalizeOperations } from "./operations.ts";
 
 export const EXTENSION_DIR = ".";
+export const EXTENSION_DATA_DIR = "~/.pi/agent/extensions/pi-perm";
 export const USER_CONFIG_ENV = "PI_PERM_USER_CONFIG";
 type AnyRecord = Record<string, any>;
 
@@ -56,6 +57,9 @@ export function validateConfig(config: any) {
   if (!config?.tools || typeof config.tools !== "object") errors.push("tools must be an object");
   if (config?.activeProfile && config?.profiles && !config.profiles[config.activeProfile]) {
     errors.push(`activeProfile '${config.activeProfile}' is not defined`);
+  }
+  if (path.isAbsolute(config?.runtime?.settingsDir ?? "")) {
+    errors.push("runtime.settingsDir must be a relative path under runtime.baseDir");
   }
   for (const [name, profile] of Object.entries(config?.profiles ?? {}) as Array<[string, AnyRecord]>) {
     if (!profile?.sandbox) errors.push(`profiles.${name}.sandbox is required`);
@@ -152,4 +156,27 @@ export function getActiveProfile(state: any) {
   const profile = state.config.profiles[state.activeProfile ?? state.config.activeProfile];
   if (!profile) throw new Error(`Profile '${state.activeProfile}' is not defined`);
   return profile;
+}
+
+export function resolveRuntimeBaseDir(config: any, options: AnyRecord = {}) {
+  const configured = options.runtimeBaseDir ?? config.runtime?.baseDir ?? EXTENSION_DATA_DIR;
+  const expanded = expandHome(configured);
+  return path.isAbsolute(expanded) ? expanded : path.join(os.homedir(), expanded);
+}
+
+export function resolveSrtSettingsDir(config: any, runtimeBaseDir: string) {
+  const settingsDir = config.runtime?.settingsDir ?? "runtime";
+  if (path.isAbsolute(settingsDir)) {
+    throw new Error("runtime.settingsDir must be a relative path under runtime.baseDir");
+  }
+  const resolved = path.resolve(runtimeBaseDir, settingsDir);
+  if (!isPathInside(runtimeBaseDir, resolved)) {
+    throw new Error("runtime.settingsDir must stay under runtime.baseDir");
+  }
+  return resolved;
+}
+
+function isPathInside(parent: string, child: string) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }

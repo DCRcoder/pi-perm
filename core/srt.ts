@@ -14,10 +14,9 @@ export function toSrtSettings(profile: any) {
   };
 }
 
-export function writeSrtSettings({ profile, cwd, runtimeDir, toolCallId = "manual" }: any) {
-  const baseDir = path.resolve(cwd, runtimeDir);
-  fs.mkdirSync(baseDir, { recursive: true });
-  const filePath = path.join(baseDir, `${sanitizeFileName(toolCallId)}.srt-settings.json`);
+export function writeSrtSettings({ profile, settingsDir, toolCallId = "manual" }: any) {
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const filePath = path.join(settingsDir, `${sanitizeFileName(toolCallId)}.srt-settings.json`);
   fs.writeFileSync(filePath, `${JSON.stringify(toSrtSettings(profile), null, 2)}\n`);
   return filePath;
 }

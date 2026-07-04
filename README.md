@@ -125,6 +125,20 @@ Common patterns:
 
 When original command patterns are not expressive enough, use `advanced` rules. Supported fields include `id`, `category`, `command`, `subcommands`, `argvIncludes`, `commandIncludes`, `commandIncludesAll`, `action`, and `reason`.
 
+## Confirmation Choices
+
+For actions that match `confirm`, pi-perm can offer three choices when the Pi UI supports selectable prompts:
+
+| Choice | Scope |
+| --- | --- |
+| Deny | Blocks the current tool call. |
+| Allow once | Allows only the current tool call. The same command or path asks again next time. |
+| Always allow this session | Allows the same profile, tool, rule, and target again for the current Pi session only. The grant is kept in memory and is not written to config. Switching profiles clears session grants. |
+
+If the runtime only supports a boolean `ctx.ui.confirm`, approval is treated as `Allow once`.
+
+While a confirmation choice is waiting for user input, pi-perm asks Pi to show a blocked-style status and working message. If Herdr's Pi integration is installed, pi-perm also emits `herdr:blocked` on Pi's event bus so Herdr can show the agent as blocked. The status is restored when the choice completes. Herdr's `done` label is derived from `idle` plus pane visibility, so pi-perm releases the blocked state instead of emitting a separate done event.
+
 ## Pi Commands
 
 - `/pi-perm`: show the current profile and policy summary.

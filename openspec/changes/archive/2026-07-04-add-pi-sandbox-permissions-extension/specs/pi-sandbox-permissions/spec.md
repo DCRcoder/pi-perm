@@ -100,6 +100,33 @@
 - **WHEN** `bash` 工具调用包含配置为 `confirm` 的 `open`、`osascript`、`launchctl` 或系统自动化操作
 - **THEN** 系统在执行前请求用户确认，并记录命中的系统自动化规则
 
+### Requirement: Session 级确认授权
+系统 SHALL 在确认提示中支持“允许一次”和“本 session 始终允许”。session 级授权 MUST 只在当前 extension 实例生命周期内生效，MUST NOT 写入配置或跨 session 持久化。
+
+#### Scenario: 用户选择允许一次
+- **WHEN** 工具调用命中 `confirm` 规则且用户选择“允许一次”
+- **THEN** 系统放行当前调用，不写入 session 授权缓存，并在下一次命中同一规则和目标时再次请求确认
+
+#### Scenario: 用户选择本 session 始终允许
+- **WHEN** 工具调用命中 `confirm` 规则且用户选择“本 session 始终允许”
+- **THEN** 系统放行当前调用，并按 active profile、`toolName`、规则 ID 或操作 ID、目标摘要记录当前 session 授权 key
+
+#### Scenario: 同一 session 内重复命中已授权目标
+- **WHEN** 后续工具调用命中相同的 session 授权 key
+- **THEN** 系统不再请求用户确认，直接放行该调用，并记录 session 授权命中审计
+
+#### Scenario: 不同命令或路径仍需确认
+- **WHEN** 用户已对一个命令或路径选择“本 session 始终允许”
+- **THEN** 系统不得将该授权用于不同规则 ID、不同操作 ID 或不同目标摘要的工具调用
+
+#### Scenario: 切换 profile 后授权失效
+- **WHEN** 用户已对一个工具调用选择“本 session 始终允许”后执行 `/pi-perm use <profile>` 切换到另一个 profile
+- **THEN** 系统清空当前 session 授权缓存，后续同名工具、规则和目标仍需重新确认
+
+#### Scenario: UI 只支持布尔确认
+- **WHEN** 运行环境只提供 `ctx.ui.confirm` 而不支持选项式确认
+- **THEN** 系统保持兼容，用户确认成功只视为“允许一次”，不得写入 session 授权缓存
+
 ### Requirement: 文件工具权限判定
 系统 SHALL 在配置启用时拦截文件类工具，并根据配置的路径规则和当前 profile 的文件系统策略决定允许、阻断或确认。
 
@@ -151,6 +178,10 @@
 #### Scenario: 用户确认授权
 - **WHEN** 用户通过确认提示允许一次或 session 级调用
 - **THEN** 系统记录授权范围、来源和过期条件
+
+#### Scenario: Session 授权命中
+- **WHEN** 工具调用因当前 session 授权缓存而跳过确认
+- **THEN** 系统记录命中的授权 key、工具名、目标摘要和时间
 
 ### Requirement: Fail-closed 行为
 系统 SHALL 在配置错误、SRT 缺失、UI 不可用或平台不支持且没有显式降级配置时，对受控工具采用 fail-closed 行为。

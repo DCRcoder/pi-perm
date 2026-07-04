@@ -128,6 +128,20 @@ reason = "Production deploy requires confirmation."
 
 `pi_perm_policy` 是只读工具，用于让 agent 查询当前 profile 和权限摘要。它不能修改配置、切换 profile 或提升权限。
 
+## 确认选项
+
+当操作命中 `confirm` 规则，且 Pi UI 支持选项式提示时，pi-perm 会提供三个选项：
+
+| 选项 | 生效范围 |
+| --- | --- |
+| 拒绝 | 阻断当前工具调用。 |
+| 允许一次 | 只放行当前工具调用；下次同一命令或路径仍会再次询问。 |
+| 本 session 始终允许 | 在当前 Pi session 内放行同一 profile、工具、规则和目标；授权只保存在内存中，不写入配置。切换 profile 会清空 session 授权。 |
+
+如果运行环境只支持布尔 `ctx.ui.confirm`，确认成功会按“允许一次”处理。
+
+等待用户选择期间，pi-perm 会请求 Pi 显示 blocked 风格状态和 working 文案；如果已安装 Herdr 的 Pi integration，还会通过 Pi event bus 发送 `herdr:blocked`，让 Herdr 将 agent 显示为 blocked。用户完成选择后会恢复默认状态。Herdr 的 `done` 是由 `idle` 加 pane 是否已查看派生出来的展示标签，因此 pi-perm 只释放 blocked 状态，不额外发送 done 事件。
+
 ## 开发验证
 
 ```bash

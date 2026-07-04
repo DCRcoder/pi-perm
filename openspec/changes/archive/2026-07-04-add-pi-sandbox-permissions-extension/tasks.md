@@ -25,6 +25,7 @@
 - [x] 4.1 注册 `/pi-perm` 命令，支持查看、列出、切换 profile 和查看审计摘要
 - [x] 4.2 注册只读 `pi_perm_policy` 工具，返回当前策略摘要且不提供权限提升能力
 - [x] 4.3 实现审计记录写入，覆盖允许、阻断、确认、降级和 SRT settings 生成
+- [x] 4.4 在确认流程中提供“拒绝 / 允许一次 / 本 session 始终允许”选项，并在当前 extension 实例内缓存 session 授权
 
 ## 5. 验证
 
@@ -33,3 +34,4 @@
 - [x] 5.3 运行 TypeScript 类型检查和相关测试
 - [x] 5.4 更新任务状态和实现说明，记录无法自动化验证的人工测试点
   - 人工测试点：通过 `pi -e ./index.ts` 或 `pi install ./relative/path` 加载 package；执行 `/pi-perm`、`/pi-perm list`、`/pi-perm use workspace`；安装 `@anthropic-ai/sandbox-runtime` 后用真实 `bash` 调用确认 `srt --settings` 包装和 OS 级阻断行为。
+- [x] 5.5 添加 session 授权测试，覆盖允许一次仍重复询问、session 始终允许跳过重复询问、不同目标仍需确认、profile 切换清空缓存、旧 `ctx.ui.confirm` 兼容

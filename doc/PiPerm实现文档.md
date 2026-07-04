@@ -166,8 +166,17 @@ Pi Agent 触发 `session_start` 后，[index.ts](../index.ts) 通过 `ctx.ui.not
 3. 其他工具走 `evaluateToolCall()`。
 4. `bash` 会先匹配显式 `rules`，再匹配 `operations`。
 5. 结果为 `block` 时直接阻断。
-6. 结果为 `confirm` 时调用 Pi UI 确认。
-7. 如果是 `bash` 且 `wrapWithSrt = true`，生成 SRT settings 并改写命令。
+6. 结果为 `confirm` 时先检查当前 session 授权缓存；命中缓存则直接放行并写审计。
+7. 未命中缓存时调用 Pi UI 确认，支持“拒绝 / 允许一次 / 本 session 始终允许”。等待用户输入期间会通过 Pi UI 状态 API 显示 blocked 风格状态，并在存在 Herdr Pi integration 时通过 Pi event bus 发出 `herdr:blocked`；旧环境只有 `ctx.ui.confirm` 时，确认成功只按“允许一次”处理。
+8. 如果是 `bash` 且 `wrapWithSrt = true`，生成 SRT settings 并改写命令。
+
+### 5.2.1 Session 级授权
+
+[core/extension.ts](../core/extension.ts) 在 extension state 中维护 `sessionAllows` 内存集合。用户选择“本 session 始终允许”后，系统按当前 active profile、工具名、命中的规则 ID 或操作 ID、目标摘要生成授权 key，并只在当前 extension 实例生命周期内复用。
+
+该授权不会写入 `config.toml`、`config.json` 或用户配置，因此重启 Pi session 后自动失效。重复命中相同 key 时，系统跳过确认并记录 `session_allow_hit` 审计事件；不同 profile、不同命令、不同规则或不同路径仍会重新确认。执行 `/pi-perm use <profile>` 切换 profile 时，系统会清空当前 session 授权缓存。
+
+确认提示由 `core/extension.ts:confirmDecision()` 统一包裹 UI 状态保护。扩展初始化时会从 `index.ts` 注入 `pi.events`。显示选择器前会调用 `events.emit("herdr:blocked", { active: true, label })`、`ctx.ui.setStatus("pi-perm", "blocked: waiting for permission")`、`ctx.ui.setWorkingMessage(...)` 和 `ctx.ui.setWorkingIndicator({ frames: ["■"] })`；无论用户选择、取消还是 UI 抛错，都会在 `finally` 中发送 `active: false` 并恢复默认状态。缺少 event bus 或 Herdr integration 时不影响权限确认。Herdr 的 `done` 是 `idle + pane 未查看` 的 UI 派生状态，pi-perm 不直接发送 done 事件。
 
 ### 5.3 命令操作权限
 

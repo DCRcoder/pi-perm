@@ -5,6 +5,22 @@ import os from "node:os";
 import path from "node:path";
 import { applySecurityBoundary, deepMerge, loadConfig, resolveRuntimeBaseDir, resolveSrtSettingsDir } from "../core/config.ts";
 
+function permissionToml(name = "workspace") {
+  return `
+activePermissionProfile = "${name}"
+
+[permissions.${name}.filesystem]
+":minimal" = "read"
+
+[permissions.${name}.filesystem.":workspace_roots"]
+"." = "write"
+"**/*.env" = "deny"
+
+[permissions.${name}.network]
+enabled = false
+`;
+}
+
 test("deepMerge overrides nested objects without inventing policy values", () => {
   const merged = deepMerge(
     { tools: { bash: { mode: "enforce", wrapWithSrt: true } } },
@@ -18,25 +34,25 @@ test("deepMerge overrides nested objects without inventing policy values", () =>
 test("project high-risk settings are downgraded unless user config allows them", () => {
   const config = {
     version: 1,
-    activeProfile: "workspace",
+    activePermissionProfile: "workspace",
     tools: {},
-    profiles: {
+    effectivePermissionProfiles: {
       workspace: {
-        sandbox: {
+        dangerous: {
           allowAppleEvents: true,
-          enableWeakerNestedSandbox: true,
-          network: { allowedDomains: [], deniedDomains: [], allowUnixSockets: ["/var/run/docker.sock"], allowAllUnixSockets: true },
-          filesystem: { denyRead: [], allowRead: [], allowWrite: [], denyWrite: [] }
-        }
+          enableWeakerNestedSandbox: true
+        },
+        network: { unixSockets: { "/var/run/docker.sock": "allow" }, allowAllUnixSockets: true },
+        filesystem: { entries: [] }
       }
     }
   };
   const { config: sanitized, audit } = applySecurityBoundary(config, { user: {} });
-  const sandbox = sanitized.profiles.workspace.sandbox;
-  assert.equal(sandbox.allowAppleEvents, false);
-  assert.equal(sandbox.enableWeakerNestedSandbox, false);
-  assert.equal(sandbox.network.allowAllUnixSockets, false);
-  assert.deepEqual(sandbox.network.allowUnixSockets, []);
+  const profile = sanitized.effectivePermissionProfiles.workspace;
+  assert.equal(profile.dangerous.allowAppleEvents, false);
+  assert.equal(profile.dangerous.enableWeakerNestedSandbox, false);
+  assert.equal(profile.network.allowAllUnixSockets, false);
+  assert.equal(profile.network.unixSockets["/var/run/docker.sock"], "deny");
   assert.equal(audit.length, 4);
 });
 
@@ -48,24 +64,14 @@ test("loadConfig merges default, project, and user config in order", () => {
     path.join(extensionRoot, "defaults/base.toml"),
     `
 version = 1
-activeProfile = "strict"
-
-[profiles.strict.sandbox.network]
-allowedDomains = []
-deniedDomains = []
-
-[profiles.strict.sandbox.filesystem]
-denyRead = []
-allowRead = []
-allowWrite = []
-denyWrite = []
+${permissionToml("strict")}
 
 [tools.bash]
 mode = "enforce"
 defaultAction = "confirm"
 `
   );
-  fs.writeFileSync(path.join(extensionRoot, "config.json"), JSON.stringify({ activeProfile: "strict", tools: { bash: { srtBinary: "srt" } } }));
+  fs.writeFileSync(path.join(extensionRoot, "config.json"), JSON.stringify({ activePermissionProfile: "strict", tools: { bash: { srtBinary: "srt" } } }));
   const userPath = path.join(dir, "user.json");
   fs.writeFileSync(userPath, JSON.stringify({ tools: { bash: { defaultAction: "allow" } } }));
 
@@ -83,17 +89,7 @@ test("loadConfig prefers TOML project config and expands operation command patte
     path.join(extensionRoot, "defaults/base.toml"),
     `
 version = 1
-activeProfile = "strict"
-
-[profiles.strict.sandbox.network]
-allowedDomains = []
-deniedDomains = []
-
-[profiles.strict.sandbox.filesystem]
-denyRead = []
-allowRead = []
-allowWrite = []
-denyWrite = []
+${permissionToml("strict")}
 
 [tools.bash]
 mode = "enforce"
@@ -107,7 +103,7 @@ preset = "recommended"
   fs.writeFileSync(
     path.join(extensionRoot, "config.toml"),
     `
-activeProfile = "strict"
+activePermissionProfile = "strict"
 
 [tools.bash]
 srtBinary = "toml-srt"
@@ -133,18 +129,7 @@ test("runtime settingsDir must be relative to runtime base dir", () => {
     path.join(extensionRoot, "defaults/base.toml"),
     `
 version = 1
-activeProfile = "strict"
-
-[profiles.strict.sandbox.network]
-allowedDomains = []
-deniedDomains = []
-allowUnixSockets = []
-
-[profiles.strict.sandbox.filesystem]
-denyRead = []
-allowRead = []
-allowWrite = []
-denyWrite = []
+${permissionToml("strict")}
 
 [tools]
 
@@ -175,4 +160,78 @@ test("runtime settingsDir cannot escape runtime base dir", () => {
     () => resolveSrtSettingsDir({ runtime: { settingsDir: "../outside" } }, path.join(os.tmpdir(), "pi-perm-base")),
     /runtime\.settingsDir must stay under runtime\.baseDir/
   );
+});
+
+// ===== tools.bash.readOnlyCommands config tests =====
+
+test("loadConfig preserves tools.bash.readOnlyCommands as an array", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-readonly-"));
+  const extensionRoot = dir;
+  fs.mkdirSync(path.join(extensionRoot, "defaults"), { recursive: true });
+  fs.writeFileSync(
+    path.join(extensionRoot, "defaults/base.toml"),
+    `
+version = 1
+${permissionToml("workspace")}
+
+[tools.bash]
+mode = "enforce"
+defaultAction = "confirm"
+readOnlyCommands = ["bat", "fd", "ag"]
+`
+  );
+  const loaded = loadConfig({ cwd: dir, extensionRoot, userPath: path.join(dir, "missing.toml") });
+  assert.deepEqual(loaded.config.tools.bash.readOnlyCommands, ["bat", "fd", "ag"]);
+});
+
+test("loadConfig falls back to [] when tools.bash.readOnlyCommands is missing or invalid", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-readonly-missing-"));
+  const extensionRoot = dir;
+  fs.mkdirSync(path.join(extensionRoot, "defaults"), { recursive: true });
+  fs.writeFileSync(
+    path.join(extensionRoot, "defaults/base.toml"),
+    `
+version = 1
+${permissionToml("workspace")}
+
+[tools.bash]
+mode = "enforce"
+defaultAction = "confirm"
+`
+  );
+  const loaded = loadConfig({ cwd: dir, extensionRoot, userPath: path.join(dir, "missing.toml") });
+  assert.deepEqual(loaded.config.tools.bash.readOnlyCommands, []);
+});
+
+// ===== audit file relocation tests =====
+
+import { resolveAuditFile } from "../core/config.ts";
+
+test("resolveAuditFile defaults to runtimeBaseDir/audit.jsonl", () => {
+  const resolved = resolveAuditFile({}, "/tmp/pi-perm-base");
+  assert.equal(resolved, path.join("/tmp/pi-perm-base", "audit.jsonl"));
+});
+
+test("resolveAuditFile appends audit.file as a relative path under runtimeBaseDir", () => {
+  const resolved = resolveAuditFile({ audit: { file: "logs/perm.jsonl" } }, "/tmp/pi-perm-base");
+  assert.equal(resolved, path.join("/tmp/pi-perm-base", "logs", "perm.jsonl"));
+});
+
+test("resolveAuditFile rejects absolute audit.file paths", () => {
+  assert.throws(
+    () => resolveAuditFile({ audit: { file: "/var/log/audit.jsonl" } }, "/tmp/pi-perm-base"),
+    /audit\.file must be a relative path/
+  );
+});
+
+test("resolveAuditFile rejects audit.file paths that escape runtimeBaseDir", () => {
+  assert.throws(
+    () => resolveAuditFile({ audit: { file: "../escape.jsonl" } }, "/tmp/pi-perm-base"),
+    /audit\.file must stay under runtime\.baseDir/
+  );
+});
+
+test("resolveAuditFile rejects empty or non-string audit.file", () => {
+  assert.throws(() => resolveAuditFile({ audit: { file: "" } }, "/tmp/pi-perm-base"), /audit\.file/);
+  assert.throws(() => resolveAuditFile({ audit: { file: 123 } }, "/tmp/pi-perm-base"), /audit\.file/);
 });

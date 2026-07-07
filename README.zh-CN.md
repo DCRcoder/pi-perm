@@ -62,13 +62,51 @@ pnpm install
 pi -e ./index.ts
 ```
 
-项目配置推荐使用 `config.toml`。JSON 仍然保留兼容支持。项目配置可以定义权限策略，但 Apple Events、弱沙盒模式、全部 Unix socket、Docker socket 等高风险能力必须由用户级配置显式授权，不能仅靠项目配置开启。
+项目配置推荐使用 `config.toml`。JSON 仍然保留文件格式兼容，但旧的 `profiles.<name>.sandbox.*` 权限模型不再支持；文件系统和网络权限必须通过 `permissions.<name>` 配置。
+
+项目配置可以定义权限策略，但 Apple Events、弱沙盒模式、全部 Unix socket、Docker socket 等高风险能力必须由用户级配置显式授权，不能仅靠项目配置开启。
 
 运行时文件属于 extension 状态，不属于当前项目文件。`runtime.settingsDir` 始终解析到 `runtime.baseDir` 下且必须是相对路径；pi-perm 不会为了 SRT settings 在当前项目目录创建或使用 `runtime/`。
 
+## Permission Profiles
+
+`activePermissionProfile` 选择一个命名权限 profile。一个 profile 同时描述文件系统和网络边界，配置方式参考 Codex permissions：
+
+```toml
+version = 1
+activePermissionProfile = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+"**/*.env" = "deny"
+".env" = "deny"
+".env.*" = "deny"
+".git/hooks/**" = "deny"
+
+[permissions.workspace.network]
+enabled = false
+allowLocalBinding = false
+
+[tools.bash]
+mode = "enforce"
+defaultAction = "allow"
+wrapWithSrt = true
+srtBinary = "srt"
+```
+
+文件系统权限值只有 `read`、`write`、`deny`。更具体路径覆盖更宽路径；同等具体度下优先级为 `deny > write > read`。`:workspace_roots` 下的路径相对当前 workspace，不能通过 `..` 逃逸。
+
+普通 workspace 内命令会在该边界内自动放行。命中 `tools.bash.operations` 的危险命令、网络关闭时的联网命令、被 deny 的路径和高风险能力仍会确认或阻断。
+
 ## 操作权限
 
-`tools.bash.operations` 控制命令级操作权限，发生在 SRT 沙盒包装之前。它不依赖 Sandbox Runtime，因此即使关闭沙盒包装，也可以对 `rm`、`git push`、`sudo`、远程脚本执行、凭据读取、发布、Docker、云资源操作等行为进行确认或阻断。
+`tools.bash.operations` 控制命令级例外规则，发生在 SRT 沙盒包装之前。它不依赖 Sandbox Runtime，因此即使关闭沙盒包装，也可以对 `rm`、`git push`、`sudo`、远程脚本执行、凭据读取、发布、Docker、云资源操作等行为进行确认或阻断。
 
 示例：
 
@@ -81,7 +119,6 @@ srtBinary = "srt"
 preset = "recommended"
 block = ["~/.ssh/", "gh auth token", ".git/hooks"]
 confirm = ["git push", "git commit", "rm -r", "curl | sh", "kubectl", "terraform", "docker"]
-allow = ["pnpm install"]
 
 [[tools.bash.operations.advanced]]
 id = "confirm-prod-deploy"
@@ -99,7 +136,7 @@ reason = "Production deploy requires confirmation."
 | `preset` | string | 否 | 内置操作规则集合。推荐使用 `recommended`。 |
 | `block` | string[] | 否 | 需要阻断的原命令或命令片段，会覆盖 preset 中的动作。 |
 | `confirm` | string[] | 否 | 需要用户确认的原命令或命令片段，会覆盖 preset 中的动作。 |
-| `allow` | string[] | 否 | 直接放行的原命令或命令片段，会覆盖 preset 中的动作。 |
+| `allow` | string[] | 否 | 直接放行的原命令或命令片段。普通 workspace 内命令不需要配置 allowlist。 |
 | `advanced` | table array | 否 | 低层 matcher 规则，用于项目特有命令。 |
 
 常用写法：
@@ -121,11 +158,41 @@ reason = "Production deploy requires confirmation."
 
 当原命令模式不够用时，可以使用 `advanced` 规则。可用字段包括：`id`、`category`、`command`、`subcommands`、`argvIncludes`、`commandIncludes`、`commandIncludesAll`、`action` 和 `reason`。
 
+## Bash 只读命令白名单
+
+`pi-perm` 在执行 `bash` 命令前会先检查"只读命令白名单 + 当前工作目录内路径"快速通道，命中后直接放行，不会弹出确认，也不会走 `tools.bash.operations` 规则匹配。
+
+- **内置白名单**：`ls`、`cat`、`head`、`tail`、`wc`、`grep`、`rg`、`find`（不带 `-delete` / `-exec` / `-execdir` / `-ok` / `-okdir` 写标志）、`stat`、`file`、`tree`。
+- **路径范围**：仅当命令参数解析后位于当前工作目录内（不含 `..`、绝对路径、`~` 开头的家目录路径）才自动放行。`denyRead` 始终优先。
+- **用户追加**：在 `[tools.bash]` 中通过 `readOnlyCommands` 追加自定义只读命令，例如 `bat`、`fd`、`ag`。
+- **复杂命令回退**：遇到变量（`$HOME`）、命令替换（`$(...)` / 反引号）、管道链中存在非只读命令等情况，保守起见不会自动放行，回退到原 `tools.bash.operations` 规则。
+- **审计**：命中快速通道时会写 `decision` 审计事件，`ruleId = "read-only-allowlist"`。
+
+示例：
+
+```toml
+[tools.bash]
+readOnlyCommands = ["bat", "fd", "ag"]
+```
+
+## 路径策略统一
+
+file 工具（`read` / `write` / `edit`）和 `bash` 中针对相同路径的访问共用当前 `permissions.<profile>.filesystem`：
+
+- `deny` 优先级最高，命中即阻断读写。
+- `write` 表示允许读取和写入。
+- `read` 表示只允许读取；写入同一路径会进入确认或阻断。
+- `bash` 中只读命令访问 cwd 内路径也按上述规则判定：未命中 `deny` 才进入自动放行。
+
+## 审计文件位置
+
+`pi-perm` 审计日志默认写入 `~/.pi/agent/extensions/pi-perm/audit.jsonl`（`runtime.baseDir` 下），不污染当前项目工作目录。`audit.file` 仍为相对路径配置项，文件名可控；绝对路径和逃出 `runtime.baseDir` 的路径在配置加载阶段被拒绝。
+
 ## Pi 命令
 
-- `/pi-perm`：查看当前 profile 和策略摘要。
-- `/pi-perm list`：列出已配置的 profiles。
-- `/pi-perm use <profile>`：切换当前会话使用的 profile。
+- `/pi-perm`：查看当前 permission profile 和策略摘要。
+- `/pi-perm list`：列出已配置的 permission profiles。
+- `/pi-perm use <profile>`：切换当前会话使用的 permission profile。
 - `/pi-perm audit`：查看审计日志路径。
 
 `pi_perm_policy` 是只读工具，用于让 agent 查询当前 profile 和权限摘要。它不能修改配置、切换 profile 或提升权限。

@@ -1,45 +1,67 @@
 version = 1
-activeProfile = "workspace"
+activePermissionProfile = "workspace"
 
 [profiles.workspace]
-description = "Read the workspace, write only configured workspace paths, and keep network disabled."
+description = "Read and edit the workspace, keep network disabled by default."
 
-[profiles.workspace.sandbox.network]
-allowedDomains = []
-deniedDomains = []
-allowUnixSockets = []
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+"**/*.env" = "deny"
+".env" = "deny"
+".env.*" = "deny"
+".git/hooks/**" = "deny"
+
+[permissions.workspace.filesystem.":tmpdir"]
+"." = "write"
+
+[permissions.workspace.filesystem.":slash_tmp"]
+"." = "write"
+
+[permissions.workspace.network]
+enabled = false
 allowLocalBinding = false
 
-[profiles.workspace.sandbox.filesystem]
-denyRead = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh/hosts.yml"]
-allowRead = ["."]
-allowWrite = ["."]
-denyWrite = [".env", ".env.*", ".git/config", ".git/hooks/**"]
+# Use a separate profile when a workflow intentionally needs constrained network access.
+[permissions.workspace-network.filesystem]
+":minimal" = "read"
 
-[profiles.workspace.sandbox.ignoreViolations]
+[permissions.workspace-network.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+"**/*.env" = "deny"
 
-[profiles.workspace.sandbox]
-enableWeakerNestedSandbox = false
-enableWeakerNetworkIsolation = false
-allowAppleEvents = false
+[permissions.workspace-network.network]
+enabled = true
+allowLocalBinding = false
 
-[profiles.workspace.toolDefaults]
-mode = "enforce"
-defaultAction = "confirm"
+[permissions.workspace-network.network.domains]
+"registry.npmjs.org" = "allow"
+"api.github.com" = "allow"
+
+[permissions.workspace-network.network.unixSockets]
+"/var/run/docker.sock" = "deny"
 
 [tools.bash]
+mode = "enforce"
+defaultAction = "allow"
 wrapWithSrt = true
 srtBinary = "srt"
+# Built-ins already include ls / cat / head / tail / wc / grep / rg / find / stat / file / tree.
+readOnlyCommands = ["bat", "fd", "ag"]
 
-# Human-friendly operation policy:
-# - preset = "recommended" enables common defaults
-# - block/confirm/allow use command patterns users already know
-# - advanced is only for project-specific commands
+# Advanced exception policy. Routine workspace-local commands do not need an allowlist.
 [tools.bash.operations]
 preset = "recommended"
 block = ["~/.ssh/", "gh auth token", ".git/hooks"]
 confirm = ["git push", "git commit", "rm -r", "curl | sh", "kubectl", "terraform", "docker"]
-allow = ["pnpm install"]
 
 [[tools.bash.operations.advanced]]
 id = "confirm-prod-deploy"
@@ -49,7 +71,26 @@ subcommands = ["deploy:prod"]
 action = "confirm"
 reason = "Production deploy requires confirmation."
 
+[tools.read]
+mode = "enforce"
+defaultAction = "confirm"
+pathFields = ["path"]
+
+[tools.write]
+mode = "enforce"
+defaultAction = "confirm"
+pathFields = ["path", "file_path"]
+
+[tools.edit]
+mode = "enforce"
+defaultAction = "confirm"
+pathFields = ["path", "file_path"]
+
 [runtime]
 baseDir = "~/.pi/agent/extensions/pi-perm"
 settingsDir = "runtime"
 sessionAllowTtlMs = 1800000
+
+[audit]
+enabled = true
+file = "audit.jsonl"

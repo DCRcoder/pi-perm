@@ -68,13 +68,51 @@ pnpm install
 pi -e ./index.ts
 ```
 
-Project configuration should use `config.toml`. JSON remains supported for compatibility. Project config can define permission policies, but high-risk capabilities such as Apple Events, weak sandbox mode, unrestricted Unix sockets, and Docker socket access must be explicitly allowed by user-level config. They cannot be enabled by project config alone.
+Project configuration should use `config.toml`. JSON remains supported for file-format compatibility, but the old `profiles.<name>.sandbox.*` permission model is no longer supported. Filesystem and network permissions must be configured through `permissions.<name>`.
+
+Project config can define permission policies, but high-risk capabilities such as Apple Events, weak sandbox mode, unrestricted Unix sockets, and Docker socket access must be explicitly allowed by user-level config. They cannot be enabled by project config alone.
 
 Runtime files are extension state, not project files. `runtime.settingsDir` is always resolved under `runtime.baseDir` and must be relative; pi-perm does not create or use a `runtime/` directory in the current project for SRT settings.
 
+## Permission Profiles
+
+`activePermissionProfile` selects a named permission profile. A profile combines filesystem and network boundaries, similar to Codex permissions:
+
+```toml
+version = 1
+activePermissionProfile = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+"**/*.env" = "deny"
+".env" = "deny"
+".env.*" = "deny"
+".git/hooks/**" = "deny"
+
+[permissions.workspace.network]
+enabled = false
+allowLocalBinding = false
+
+[tools.bash]
+mode = "enforce"
+defaultAction = "allow"
+wrapWithSrt = true
+srtBinary = "srt"
+```
+
+Filesystem access values are `read`, `write`, and `deny`. More specific paths override broader ones; for equal specificity, `deny > write > read`. `:workspace_roots` paths are relative to the current workspace and cannot escape with `..`.
+
+Routine workspace-local commands are allowed inside this boundary. Risky command patterns in `tools.bash.operations`, disabled-network commands, denied paths, and high-risk capabilities still confirm or block.
+
 ## Operation Permissions
 
-`tools.bash.operations` controls command-level operation permissions before SRT sandbox wrapping. It does not depend on Sandbox Runtime, so it can still confirm or block risky commands when sandbox wrapping is disabled. Typical examples include `rm`, `git push`, `sudo`, remote script execution, credential reads, package publishing, Docker, and cloud or cluster operations.
+`tools.bash.operations` controls command-level exceptions before SRT sandbox wrapping. It does not depend on Sandbox Runtime, so it can still confirm or block risky commands when sandbox wrapping is disabled. Typical examples include `rm`, `git push`, `sudo`, remote script execution, credential reads, package publishing, Docker, and cloud or cluster operations.
 
 Example:
 
@@ -87,7 +125,6 @@ srtBinary = "srt"
 preset = "recommended"
 block = ["~/.ssh/", "gh auth token", ".git/hooks"]
 confirm = ["git push", "git commit", "rm -r", "curl | sh", "kubectl", "terraform", "docker"]
-allow = ["pnpm install"]
 
 [[tools.bash.operations.advanced]]
 id = "confirm-prod-deploy"
@@ -105,7 +142,7 @@ Fields:
 | `preset` | string | No | Built-in operation rule set. `recommended` is the suggested default. |
 | `block` | string[] | No | Original commands or command fragments that must be blocked. Overrides preset actions. |
 | `confirm` | string[] | No | Original commands or command fragments that require user confirmation. Overrides preset actions. |
-| `allow` | string[] | No | Original commands or command fragments that are allowed directly. Overrides preset actions. |
+| `allow` | string[] | No | Original commands or command fragments that are allowed directly. Use sparingly; normal workspace-local commands do not need an allowlist. |
 | `advanced` | table array | No | Low-level matcher rules for project-specific commands. |
 
 Common patterns:
@@ -143,9 +180,9 @@ While a confirmation choice is waiting for user input, pi-perm asks Pi to show a
 
 ## Pi Commands
 
-- `/pi-perm`: show the current profile and policy summary.
-- `/pi-perm list`: list configured profiles.
-- `/pi-perm use <profile>`: switch the profile for the current session.
+- `/pi-perm`: show the current permission profile and policy summary.
+- `/pi-perm list`: list configured permission profiles.
+- `/pi-perm use <profile>`: switch the permission profile for the current session.
 - `/pi-perm audit`: show the audit log path.
 
 `pi_perm_policy` is a read-only tool for querying the current profile and permission summary. It cannot modify config, switch profiles, or elevate permissions.

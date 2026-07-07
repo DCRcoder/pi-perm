@@ -1,3 +1,189 @@
+import path from "node:path";
+import { parseShellOperations } from "./policy.ts";
+
+// Built-in read-only command allowlist. These commands, when invoked with cwd-internal paths,
+// are auto-allowed by the bash read-only quick path. The list deliberately excludes commands
+// that can perform writes (e.g. `echo` is not included even though it does not write to files
+// — keeping the allowlist narrow avoids accidental over-broadening).
+export const READ_ONLY_COMMANDS: readonly string[] = [
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "grep",
+  "rg",
+  "find",
+  "stat",
+  "file",
+  "tree"
+];
+
+// `find` write flags that disqualify the command from being treated as read-only.
+const FIND_WRITE_FLAGS = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir"]);
+
+// Returns the runtime read-only set: builtin + user `tools.bash.readOnlyCommands` (deduped).
+// A missing or non-array value is treated as an empty list.
+export function getEffectiveReadOnlyCommands(config: any): string[] {
+  const userValue = config?.tools?.bash?.readOnlyCommands;
+  const userCommands = Array.isArray(userValue) ? userValue.filter((item) => typeof item === "string") : [];
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const cmd of READ_ONLY_COMMANDS) {
+    if (!seen.has(cmd)) {
+      seen.add(cmd);
+      merged.push(cmd);
+    }
+  }
+  for (const cmd of userCommands) {
+    if (!seen.has(cmd)) {
+      seen.add(cmd);
+      merged.push(cmd);
+    }
+  }
+  return merged;
+}
+
+// Conservative predicate: returns true if `command` is in the read-only set, with `find` write
+// flags disqualifying the command.
+export function isReadOnlyCommand(command: string, argv: string[], readOnlySet: Set<string>): boolean {
+  if (!readOnlySet.has(command)) return false;
+  if (command === "find") {
+    for (const arg of argv ?? []) {
+      if (FIND_WRITE_FLAGS.has(arg)) return false;
+    }
+  }
+  return true;
+}
+
+// Conservative path extraction. Skips:
+//   - long options (--xxx) and short options (-x, -xyz)
+//   - option value forms: --key=value, --key value
+//   - pure numeric tokens (line counts, byte counts)
+//   - tokens containing $ / backticks / $() (variable expansion / command substitution)
+export function extractReadOnlyPaths(argv: string[] = []): string[] {
+  const paths: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i] ?? "";
+    if (arg === "--") {
+      // End-of-options marker; the rest are positional operands.
+      for (let j = i + 1; j < argv.length; j += 1) {
+        const next = argv[j];
+        if (typeof next === "string" && isLikelyPath(next)) paths.push(next);
+      }
+      break;
+    }
+    if (arg.startsWith("--")) {
+      // --flag or --flag=value. For --flag=value, the value half is not a path.
+      if (arg.includes("=")) continue;
+      // For --flag, the next token might be a value, but we treat it as option for safety.
+      continue;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      // short option (or cluster like -lR). Skip the token and (heuristically) the next token.
+      continue;
+    }
+    if (!isLikelyPath(arg)) continue;
+    paths.push(arg);
+  }
+  return paths;
+}
+
+function isLikelyPath(token: string): boolean {
+  if (!token) return false;
+  if (/^\d+$/.test(token)) return false; // pure number
+  if (token.includes("$") || token.includes("`")) return false; // variable / substitution
+  // 仅有分隔符的 token 视为路径（包含 /、. 或 \）。避免把 -e pattern 之类的 value 误识为路径。
+  if (!/[\/.\/]/.test(token)) return false;
+  return true;
+}
+
+// Returns true if `target` resolves to a path inside `cwd` (not escaping via `..` or absolute path).
+// A leading `~` is treated as external because the bash quick path is conservative about home expansion.
+export function isPathInsideCwd(target: string, cwd: string): boolean {
+  if (!target) return false;
+  if (target.startsWith("~")) return false;
+  if (target.startsWith("$")) return false;
+  const absolute = path.resolve(cwd, target);
+  const relative = path.relative(cwd, absolute);
+  // relative 为空表示 target 就是 cwd 本身，视为内部。
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+// Evaluates a bash command against the read-only allowlist + cwd-internal path scope.
+// Returns one of:
+//   { action: "allow", reason, rule: { id: "read-only-allowlist" } }   — every operation matched
+//   { action: "block", reason, rule: { id: "read-only-allowlist" } }   — a path hit denyRead
+//   { action: "fallback", reason }                                    — caller should run evaluateToolCall
+export function evaluateBashReadAccess({ config, profile, input, cwd }: { config: any; profile: any; input: any; cwd: string }): { action: "allow" | "block" | "fallback"; reason: string; rule?: { id: string }; target?: string } {
+  const commandText = String(input?.command ?? "");
+  if (!commandText) return { action: "fallback", reason: "empty command" };
+  const operations = parseShellOperations(commandText);
+  if (operations.length === 0) return { action: "fallback", reason: "no operations parsed" };
+
+  const readOnlySet = new Set(getEffectiveReadOnlyCommands(config));
+  const denyRead = profile?.sandbox?.filesystem?.denyRead ?? [];
+  const denyReadEntries = (profile?.effectivePermissionProfile?.filesystem?.entries ?? []).filter((entry: any) => entry.access === "deny");
+
+  for (const operation of operations) {
+    if (!isReadOnlyCommand(operation.command, operation.argv, readOnlySet)) {
+      return { action: "fallback", reason: `operation '${operation.command}' is not in read-only allowlist` };
+    }
+    // 先扫一遍 argv：遇到含 $ / 反引号 / $() 的参数表示存在变量或命令替换，
+    // 这种命令无法被保守解析，应回退到原 evaluateToolCall。
+    for (const arg of operation.argv.slice(1)) {
+      if (typeof arg !== "string") continue;
+      if (arg.includes("$") || arg.includes("`")) {
+        return { action: "fallback", reason: `argument contains shell metacharacter: ${arg}` };
+      }
+    }
+    const candidates = extractReadOnlyPaths(operation.argv.slice(1));
+    if (candidates.length === 0) {
+      // No path arguments (e.g. bare `ls`); only allow if the command's own cwd-relative semantics
+      // are safe. We treat this as allow-by-default for read-only commands that do not take a path.
+      continue;
+    }
+    for (const candidate of candidates) {
+      if (!isPathInsideCwd(candidate, cwd)) {
+        return { action: "fallback", reason: `path '${candidate}' is outside cwd` };
+      }
+      const normalized = path.relative(cwd, path.resolve(cwd, candidate));
+      if (matchesAnyPath(denyRead, normalized) || matchesAnyPermissionEntry(denyReadEntries, normalized)) {
+        return { action: "block", reason: `Path denied by filesystem policy: ${candidate}`, rule: { id: "read-only-allowlist" }, target: candidate };
+      }
+    }
+  }
+  return { action: "allow", reason: "matched read-only allowlist", rule: { id: "read-only-allowlist" } };
+}
+
+function matchesAnyPermissionEntry(entries: any[], target: string): boolean {
+  return entries.some((entry) => {
+    if (entry.scope !== ":workspace_roots" && entry.scope !== "path" && entry.scope !== ":root") return false;
+    const pattern = entry.path === "." || entry.scope === ":root" ? "**" : entry.path;
+    return globMatchPath(pattern, target) || (!pattern.includes("*") && globMatchPath(`${pattern}/**`, target));
+  });
+}
+
+function matchesAnyPath(patterns: string[], target: string): boolean {
+  for (const pattern of patterns) {
+    if (globMatchPath(pattern, target)) return true;
+  }
+  return false;
+}
+
+function globMatchPath(pattern: string, target: string): boolean {
+  const normalizedPattern = String(pattern).replace(/^\.\//, "");
+  const normalizedTarget = String(target).replace(/^\.\//, "");
+  if (normalizedPattern === normalizedTarget) return true;
+  const escaped = normalizedPattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "%%DOUBLE_STAR%%")
+    .replace(/\*/g, "[^/]*")
+    .replace(/%%DOUBLE_STAR%%/g, ".*")
+    .replace(/\?/g, "[^/]");
+  return new RegExp(`^${escaped}$`).test(normalizedTarget);
+}
+
 export const BUILTIN_OPERATION_RULES = {
   "rm.recursive": {
     id: "rm.recursive",

@@ -1,63 +1,44 @@
 version = 1
-activeProfile = "strict"
-
-[profiles.strict]
-description = "No network, no writes, and sensitive reads denied."
-
-[profiles.strict.sandbox.network]
-allowedDomains = []
-deniedDomains = []
-allowUnixSockets = []
-allowLocalBinding = false
-
-[profiles.strict.sandbox.filesystem]
-denyRead = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh/hosts.yml"]
-allowRead = []
-allowWrite = []
-denyWrite = [".env", ".env.*", ".git/config", ".git/hooks/**"]
-
-[profiles.strict.sandbox.ignoreViolations]
-
-[profiles.strict.sandbox]
-enableWeakerNestedSandbox = false
-enableWeakerNetworkIsolation = false
-allowAppleEvents = false
-
-[profiles.strict.toolDefaults]
-mode = "enforce"
-defaultAction = "confirm"
+activePermissionProfile = "workspace"
 
 [profiles.workspace]
-description = "Read the workspace, write only configured workspace paths, and keep network disabled."
+description = "Read and edit the workspace, keep network disabled by default."
 
-[profiles.workspace.sandbox.network]
-allowedDomains = []
-deniedDomains = []
-allowUnixSockets = []
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.filesystem.":workspace_roots"]
+"." = "write"
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+"**/*.env" = "deny"
+".env" = "deny"
+".env.*" = "deny"
+".git/hooks/**" = "deny"
+
+[permissions.workspace.filesystem.":tmpdir"]
+"." = "write"
+
+[permissions.workspace.filesystem.":slash_tmp"]
+"." = "write"
+
+[permissions.workspace.network]
+enabled = false
 allowLocalBinding = false
 
-[profiles.workspace.sandbox.filesystem]
-denyRead = ["~/.ssh", "~/.gnupg", "~/.aws", "~/.config/gh/hosts.yml"]
-allowRead = ["."]
-allowWrite = ["."]
-denyWrite = [".env", ".env.*", ".git/config", ".git/hooks/**"]
-
-[profiles.workspace.sandbox.ignoreViolations]
-
-[profiles.workspace.sandbox]
+[permissions.workspace.dangerous]
+allowAppleEvents = false
 enableWeakerNestedSandbox = false
 enableWeakerNetworkIsolation = false
-allowAppleEvents = false
-
-[profiles.workspace.toolDefaults]
-mode = "enforce"
-defaultAction = "confirm"
+allowAllUnixSockets = false
 
 [tools.bash]
 mode = "enforce"
-defaultAction = "confirm"
+defaultAction = "allow"
 wrapWithSrt = true
 srtBinary = "srt"
+readOnlyCommands = []
 
 [tools.bash.operations]
 preset = "recommended"
@@ -95,7 +76,7 @@ commandIncludes = ["rm -rf /", "sudo rm", "mkfs", "diskutil erase"]
 
 [tools.read]
 mode = "enforce"
-defaultAction = "allow"
+defaultAction = "confirm"
 pathFields = ["path"]
 
 [tools.write]

@@ -4,7 +4,7 @@
 TBD - created by archiving change add-pi-sandbox-permissions-extension. Update Purpose after archive.
 ## Requirements
 ### Requirement: 配置化权限控制
-系统 SHALL 通过配置文件定义工具拦截、profile、命令操作权限、文件系统、网络、Unix socket、提示、审计和 SRT 包装行为。除 schema、安全兜底和加载路径外，代码 MUST NOT 硬编码具体业务路径、网络域名、命令白名单或 profile 行为。
+系统 SHALL 通过配置文件定义工具拦截、permission profile、命令操作权限、文件系统、网络、Unix socket、提示、审计和 SRT 包装行为。permission profile SHALL 是文件系统和网络权限的唯一主配置入口。除 schema、安全兜底、内置权限 profile 和加载路径外，代码 MUST NOT 硬编码具体业务路径、网络域名、命令白名单或用户项目 profile 行为。
 
 #### Scenario: TOML 配置优先
 - **WHEN** package 根目录同时存在 `config.toml` 和 `config.json`
@@ -12,10 +12,15 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 
 #### Scenario: 从配置加载控制规则
 - **WHEN** extension 启动并存在默认配置、项目配置和用户配置
-- **THEN** 系统按定义顺序合并配置，并使用合并后的 active profile 处理工具调用
+- **THEN** 系统按定义顺序合并配置，并使用合并后的 active permission profile 和 active profile 处理工具调用
 
-#### Scenario: 禁止代码硬编码策略
-- **WHEN** 需要调整允许写入路径、允许访问域名或工具默认动作
+#### Scenario: 旧 profile sandbox 主配置不再兼容
+- **WHEN** extension 启动时配置仍使用旧 `profiles.<name>.sandbox.filesystem` 作为权限主配置
+- **THEN** 系统报告配置错误并阻断受控工具
+- **AND** 系统不得静默转换旧配置
+
+#### Scenario: 禁止代码硬编码用户策略
+- **WHEN** 需要调整允许写入路径、允许访问域名、工具默认动作或高风险命令例外
 - **THEN** 用户只需修改配置文件，系统不要求修改 TypeScript 代码
 
 #### Scenario: 仓库根目录作为 Pi package 根目录
@@ -46,7 +51,7 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 - **THEN** 系统阻断该工具调用，并向用户显示安装或配置 `srtBinary` 的错误信息
 
 ### Requirement: 命令操作权限审批
-系统 SHALL 在执行 `bash` 工具前按配置化命令操作规则进行确认或阻断。该能力 MUST NOT 依赖 sandbox-runtime，必须能覆盖删除、权限修改、Git 写入、提权、远程脚本执行、凭据访问、网络外传、依赖安装、制品发布、容器、云资源和系统自动化等风险操作。
+系统 SHALL 在执行 `bash` 工具前按有效 permission profile 和配置化命令操作规则进行允许、确认或阻断。该能力 MUST NOT 依赖 sandbox-runtime 的执行结果，必须能在执行前覆盖删除、权限修改、Git 写入、提权、远程脚本执行、凭据访问、网络外传、依赖安装、制品发布、容器、云资源和系统自动化等风险操作。
 
 #### Scenario: 命令操作规则来自配置
 - **WHEN** 用户在配置中新增或修改 `tools.bash.operations` 规则
@@ -55,10 +60,16 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 #### Scenario: 配置样例和字段说明可用
 - **WHEN** 用户查看项目文档或配置示例
 - **THEN** 系统提供 TOML 样例和字段说明，包括 `preset`、`block`、`confirm`、`allow`、常用原命令模式，以及 `advanced` 中的 `id`、`category`、`command`、`subcommands`、`argvIncludes`、`commandIncludes`、`commandIncludesAll`、`action` 和 `reason`
+- **AND** 文档说明 operations 是高级例外规则，不是普通 bash 自动放行的必要条件
 
 #### Scenario: 使用原命令模式配置操作权限
 - **WHEN** 用户在 `tools.bash.operations.confirm` 中配置 `git push` 或 `curl | sh`
 - **THEN** 系统展开原命令模式并对对应命令操作执行确认，不要求用户书写底层 matcher
+
+#### Scenario: 普通项目命令不需要 operations allowlist
+- **WHEN** `bash` 命令在当前 permission profile 边界内执行且未命中高风险 operations
+- **THEN** 系统按边界内默认放行处理
+- **AND** 用户不需要在 `tools.bash.operations.allow` 中列出该命令
 
 #### Scenario: 删除操作需要确认
 - **WHEN** `bash` 工具调用包含配置为 `confirm` 的 `rm` 删除操作
@@ -132,14 +143,24 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 - **THEN** 系统保持兼容，用户确认成功只视为“允许一次”，不得写入 session 授权缓存
 
 ### Requirement: 文件工具权限判定
-系统 SHALL 在配置启用时拦截文件类工具，并根据配置的路径规则和当前 profile 的文件系统策略决定允许、阻断或确认。
+系统 SHALL 在配置启用时拦截文件类工具，并根据当前 effective permission profile 的路径规则决定允许、阻断或确认。
+
+#### Scenario: 写入允许路径
+- **WHEN** `write` 或 `edit` 工具访问当前 permission profile 中 `write` 允许的 workspace 路径
+- **THEN** 系统允许该工具调用
+- **AND** 系统不得为普通 workspace 写入请求确认
 
 #### Scenario: 写入被拒绝路径
 - **WHEN** `write` 或 `edit` 工具尝试访问配置中拒绝的路径
 - **THEN** 系统在工具执行前阻断调用，并返回配置化的拒绝原因
 
-#### Scenario: 需要用户确认的路径
-- **WHEN** 文件工具访问命中 `confirm` 规则的路径
+#### Scenario: 读取只读路径
+- **WHEN** `read` 工具访问当前 permission profile 中 `read` 允许但未允许写入的路径
+- **THEN** 系统允许读取
+- **AND** 写入同一路径仍不得自动允许
+
+#### Scenario: 需要用户确认的边界外路径
+- **WHEN** 文件工具访问未被当前 permission profile 明确允许且未被 deny 的路径
 - **THEN** 系统通过 `ctx.ui.confirm` 请求用户确认，并根据用户选择允许或阻断该次调用
 
 ### Requirement: Profile 管理命令
@@ -169,7 +190,7 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 - **THEN** 系统不执行任何权限变更，并返回只读工具说明
 
 ### Requirement: 审计记录
-系统 SHALL 按配置记录权限判定、用户确认结果、策略降级、SRT settings 生成和阻断原因。
+系统 SHALL 按配置记录权限判定、用户确认结果、策略降级、SRT settings 生成和阻断原因。审计文件 MUST 写入 pi-perm extension 数据目录（`runtime.baseDir`）下，不得在当前项目目录创建任何审计文件。
 
 #### Scenario: 工具调用被阻断
 - **WHEN** 任一受控工具调用被策略阻断
@@ -186,6 +207,26 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 #### Scenario: Session 授权命中
 - **WHEN** 工具调用因当前 session 授权缓存而跳过确认
 - **THEN** 系统记录命中的授权 key、工具名、目标摘要和时间
+
+#### Scenario: 审计文件位于 extension 数据目录
+- **WHEN** `audit.enabled = true` 且未指定 `audit.file`
+- **THEN** 系统把审计文件写入 `runtime.baseDir/audit.jsonl`，不创建项目目录的 `audit.jsonl`
+
+#### Scenario: 审计文件路径来自配置
+- **WHEN** 用户设置 `audit.file = "logs/perm.jsonl"`
+- **THEN** 系统把审计文件写入 `runtime.baseDir/logs/perm.jsonl`，自动创建父目录
+
+#### Scenario: 拒绝绝对 audit.file
+- **WHEN** 用户设置 `audit.file = "/var/log/audit.jsonl"`
+- **THEN** 加载阶段抛出错误，fail-closed 阻断受控工具
+
+#### Scenario: 拒绝逃出 runtime.baseDir 的 audit.file
+- **WHEN** 用户设置 `audit.file = "../escape.jsonl"`
+- **THEN** 加载阶段抛出错误，fail-closed 阻断受控工具
+
+#### Scenario: 禁用 audit
+- **WHEN** `audit.enabled = false`
+- **THEN** 系统不创建任何审计文件
 
 ### Requirement: Fail-closed 行为
 系统 SHALL 在配置错误、SRT 缺失、UI 不可用或平台不支持且没有显式降级配置时，对受控工具采用 fail-closed 行为。
@@ -237,3 +278,88 @@ TBD - created by archiving change add-pi-sandbox-permissions-extension. Update P
 - **WHEN** `runtime.sessionAllowTtlMs` 小于或等于 0
 - **THEN** 用户选择“本 session 始终允许”只放行当前调用
 - **AND** 系统不得写入 session 授权缓存
+
+### Requirement: Named permission profiles
+系统 SHALL 支持 Codex 风格 named permission profiles，用 `permissions.<name>` 同时描述文件系统、网络和高风险能力边界。普通用户 SHOULD 能通过选择 profile 表达常见权限姿态，而不必理解底层 SRT 字段。
+
+#### Scenario: 选择 active permission profile
+- **WHEN** 配置声明 `activePermissionProfile = "workspace"` 且存在 `permissions.workspace`
+- **THEN** 系统使用 `permissions.workspace` 作为当前工具调用的有效权限边界
+- **AND** `/pi-perm` 摘要显示当前 active permission profile
+
+#### Scenario: 文件系统权限使用 read write deny
+- **WHEN** 配置在 `permissions.workspace.filesystem` 或其 scope 子表中声明路径权限为 `read`、`write` 或 `deny`
+- **THEN** 系统将这些条目规范化为有效文件系统权限模型
+- **AND** 系统拒绝除 `read`、`write`、`deny` 之外的权限值
+
+#### Scenario: workspace roots 子路径不能逃逸
+- **WHEN** 配置在 `permissions.workspace.filesystem.":workspace_roots"` 下声明 `../outside`
+- **THEN** 系统报告配置错误
+- **AND** 系统不得将 workspace 外路径纳入该 workspace-scoped 规则
+
+#### Scenario: deny 优先级高于 write 和 read
+- **WHEN** 同一目标路径同时命中较宽的 `write` 规则和更具体的 `deny` 规则
+- **THEN** 系统按 `deny` 处理该目标路径
+- **AND** 工具调用不得读写该目标
+
+#### Scenario: 内置 workspace profile
+- **WHEN** 用户未提供自定义 `permissions.workspace`
+- **THEN** 系统提供内置 workspace profile
+- **AND** 该 profile 允许 workspace roots 内普通读写，拒绝敏感文件读取，网络默认关闭
+
+#### Scenario: 旧 sandbox 权限配置被拒绝
+- **WHEN** 配置没有声明 `permissions` 且仍使用 `profiles.<active>.sandbox.filesystem.allowRead`、`allowWrite`、`denyRead` 或 `denyWrite`
+- **THEN** 系统报告配置错误并 fail-closed
+- **AND** 错误信息提示用户迁移到 `permissions.<name>.filesystem`
+
+### Requirement: Boundary-first bash approval
+系统 SHALL 将 bash 审批建立在有效权限边界上。沙盒边界内且未命中高风险规则的 bash 命令 SHALL 自动允许；越过文件系统、网络或高风险能力边界的命令 MUST 按策略确认或阻断。
+
+#### Scenario: workspace 内普通 bash 命令自动允许
+- **WHEN** 当前 permission profile 允许 workspace 写入且 `bash` 命令未命中 block/confirm operations、未请求网络、未访问边界外路径
+- **THEN** 系统允许该 bash 调用
+- **AND** 系统不得向用户请求确认
+
+#### Scenario: 危险命令仍需要确认
+- **WHEN** `bash` 命令命中 `tools.bash.operations.confirm` 中的危险操作，例如 `git push`、`sudo`、`rm -r` 或 `curl | sh`
+- **THEN** 系统在执行前请求用户确认
+- **AND** session 级授权逻辑继续适用
+
+#### Scenario: 阻断规则优先于默认放行
+- **WHEN** `bash` 命令命中显式 `rules` 或 `operations.block`
+- **THEN** 系统直接阻断该调用
+- **AND** 系统不得因为 `tools.bash.defaultAction = "allow"` 而放行该调用
+
+#### Scenario: 网络关闭时联网命令需要确认
+- **WHEN** 当前 permission profile 的 `network.enabled = false` 且 `bash` 命令明显请求外部网络访问
+- **THEN** 系统返回 `confirm` 或配置化 `block` 决策
+- **AND** 系统不得静默放行该网络访问
+
+#### Scenario: 网络允许但域名 deny 优先
+- **WHEN** 当前 permission profile 启用网络且目标域名同时命中 allow 和 deny 规则
+- **THEN** 系统按 deny 处理该网络目标
+- **AND** 工具调用不得因较宽 allow 规则自动放行
+
+#### Scenario: SRT 包装使用有效 permission profile
+- **WHEN** `bash` 调用允许执行且 `wrapWithSrt = true`
+- **THEN** 系统使用当前有效 permission profile 生成 SRT settings
+- **AND** 生成结果包含文件系统、网络和 Unix socket 边界
+
+### Requirement: Simplified configuration examples
+系统 SHALL 在默认配置、示例配置和文档中以 named permission profiles 作为主配置入口，并将 `tools.bash.operations` 描述为高级例外规则。
+
+#### Scenario: 示例配置展示简化主路径
+- **WHEN** 用户查看 `config.example.toml`
+- **THEN** 示例首先展示 `activePermissionProfile`、`permissions.<name>.filesystem` 和 `permissions.<name>.network`
+- **AND** 示例不要求用户通过 operations allowlist 才能放行普通项目内命令
+
+#### Scenario: 高级 operations 仍可配置
+- **WHEN** 用户需要对特定命令模式设置 `block`、`confirm` 或 `allow`
+- **THEN** 用户仍可配置 `tools.bash.operations`
+- **AND** 系统按该例外规则覆盖默认边界内放行行为
+
+#### Scenario: 文档说明旧配置迁移但不承诺兼容
+- **WHEN** 用户阅读业务文档或 README
+- **THEN** 文档说明旧 `profiles.<name>.sandbox.filesystem.allowRead/allowWrite/denyRead/denyWrite` 与新 `permissions.<name>.filesystem` 的映射关系
+- **AND** 文档说明旧配置模式已不再兼容，用户必须迁移
+

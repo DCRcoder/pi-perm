@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export function auditEvent(config: any, event: any, cwd = process.cwd()) {
+export function auditEvent(config: any, event: any, auditFile: string) {
   if (!config.audit?.enabled) return;
-  const file = path.resolve(cwd, config.audit.file ?? "audit.jsonl");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${JSON.stringify({ time: new Date().toISOString(), ...event })}\n`);
+  if (!auditFile) return;
+  fs.mkdirSync(path.dirname(auditFile), { recursive: true });
+  fs.appendFileSync(auditFile, `${JSON.stringify({ time: new Date().toISOString(), ...event })}\n`);
 }

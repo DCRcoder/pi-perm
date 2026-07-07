@@ -1,24 +1,27 @@
 import path from "node:path";
-import { loadConfig, getActiveProfile, resolveRuntimeBaseDir, resolveSrtSettingsDir } from "./config.ts";
+import { loadConfig, getActiveProfile, resolveRuntimeBaseDir, resolveSrtSettingsDir, resolveAuditFile } from "./config.ts";
 import { auditEvent } from "./audit.ts";
 import { evaluateFileAccess, evaluateToolCall, summarizePolicy } from "./policy.ts";
 import { commandExists, wrapCommandWithSrt, writeSrtSettings } from "./srt.ts";
+import { evaluateBashReadAccess } from "./operations.ts";
 
 export function createPiPermExtension(options: any = {}) {
   const loaded = loadConfig(options);
   const runtimeBaseDir = resolveRuntimeBaseDir(loaded.config, options);
+  const auditFile = resolveAuditFile(loaded.config, runtimeBaseDir);
   const state = {
     config: loaded.config,
-    activeProfile: loaded.config.activeProfile,
+    activeProfile: loaded.config.activePermissionProfile,
     cwd: options.cwd ?? process.cwd(),
     runtimeBaseDir,
     srtSettingsDir: resolveSrtSettingsDir(loaded.config, runtimeBaseDir),
+    auditFile,
     now: options.now ?? (() => Date.now()),
     commandExists: options.commandExists ?? commandExists,
     events: options.events,
     sessionAllows: new Map<string, { lastUsedAt: number }>()
   };
-  for (const event of loaded.audit) auditEvent(state.config, event, state.cwd);
+  for (const event of loaded.audit) auditEvent(state.config, event, auditFile);
   return {
     state,
     async handleToolCall(event, ctx = {}) {
@@ -40,11 +43,29 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
   const toolName = event.toolName;
   const input = event.input ?? {};
   const isFileTool = ["read", "write", "edit"].includes(toolName);
-  const decision = isFileTool
-    ? evaluateFileAccess({ config: state.config, profile, toolName, input, cwd: state.cwd })
-    : evaluateToolCall({ config: state.config, profile, toolName, input });
+  let decision: any;
 
-  auditEvent(state.config, { type: "decision", toolName, action: decision.action, reason: decision.reason, ruleId: (decision as any).rule?.id }, state.cwd);
+  if (toolName === "bash") {
+    // bash 快速通道：只读命令 + cwd 内路径 + 未命中 denyRead → 直接放行，跳过 evaluateToolCall 的 confirm。
+    const quick = evaluateBashReadAccess({ config: state.config, profile, input, cwd: state.cwd });
+    if (quick.action === "block") {
+      auditEvent(state.config, { type: "decision", toolName, action: "block", reason: quick.reason, ruleId: quick.rule?.id }, state.auditFile);
+      return { block: true, reason: quick.reason };
+    }
+    if (quick.action === "allow") {
+      // 保留原 bash 工具策略的 wrapWithSrt / srtBinary，以便下游 SRT 包装逻辑继续生效。
+      const bashPolicy = state.config.tools?.bash ?? {};
+      decision = { action: "allow", policy: bashPolicy, rule: quick.rule, reason: quick.reason, target: quick.target };
+    } else {
+      decision = evaluateToolCall({ config: state.config, profile, toolName, input });
+    }
+  } else if (isFileTool) {
+    decision = evaluateFileAccess({ config: state.config, profile, toolName, input, cwd: state.cwd });
+  } else {
+    decision = evaluateToolCall({ config: state.config, profile, toolName, input });
+  }
+
+  auditEvent(state.config, { type: "decision", toolName, action: decision.action, reason: decision.reason, ruleId: (decision as any).rule?.id }, state.auditFile);
 
   if (decision.action === "block") {
     return { block: true, reason: decision.reason };
@@ -56,11 +77,11 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
     const sessionAllow = state.sessionAllows.get(sessionKey);
     if (sessionAllow) {
       sessionAllow.lastUsedAt = state.now();
-      auditEvent(state.config, { type: "session_allow_hit", toolName, target, key: sessionKey }, state.cwd);
+      auditEvent(state.config, { type: "session_allow_hit", toolName, target, key: sessionKey }, state.auditFile);
     } else {
       const result = await confirmDecision(ctx, state.config, state.events, toolName, target);
       const ok = result.action === "allow_once" || result.action === "allow_session";
-      auditEvent(state.config, { type: "confirm", toolName, allowed: ok, target, scope: result.action, key: result.action === "allow_session" ? sessionKey : undefined, expires: result.action === "allow_session" ? "session" : "call" }, state.cwd);
+      auditEvent(state.config, { type: "confirm", toolName, allowed: ok, target, scope: result.action, key: result.action === "allow_session" ? sessionKey : undefined, expires: result.action === "allow_session" ? "session" : "call" }, state.auditFile);
       if (!ok) return { block: true, reason: `Denied by user: ${toolName}` };
       if (result.action === "allow_session" && getSessionAllowTtlMs(state) > 0) {
         state.sessionAllows.set(sessionKey, { lastUsedAt: state.now() });
@@ -71,13 +92,13 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
   if (toolName === "bash" && decision.policy.wrapWithSrt) {
     if (!state.commandExists(decision.policy.srtBinary ?? "srt")) {
       const reason = `srt binary not found: ${decision.policy.srtBinary ?? "srt"}`;
-      auditEvent(state.config, { type: "block", toolName, reason }, state.cwd);
+      auditEvent(state.config, { type: "block", toolName, reason }, state.auditFile);
       ctx.ui?.notify?.(reason, "error");
       return { block: true, reason };
     }
     const settingsPath = writeSrtSettings({ profile, settingsDir: state.srtSettingsDir, toolCallId: event.toolCallId ?? "bash" });
     event.input.command = wrapCommandWithSrt(input.command, settingsPath, decision.policy.srtBinary ?? "srt");
-    auditEvent(state.config, { type: "srt_settings", toolName, settingsPath: formatAuditPath(state.cwd, settingsPath) }, state.cwd);
+    auditEvent(state.config, { type: "srt_settings", toolName, settingsPath: formatAuditPath(state.cwd, settingsPath) }, state.auditFile);
   }
 
   return undefined;
@@ -90,19 +111,19 @@ export function handlePiPermCommand(state: any, args = "", ctx: any = {}) {
     return summarizePolicy(state);
   }
   if (command === "list") {
-    const profiles = Object.keys(state.config.profiles);
+    const profiles = Object.keys(state.config.permissions ?? {});
     notify(ctx, `Profiles: ${profiles.join(", ")}`);
     return profiles;
   }
   if (command === "use") {
-    if (!state.config.profiles[profileName]) {
-      const profiles = Object.keys(state.config.profiles);
+    if (!state.config.permissions?.[profileName]) {
+      const profiles = Object.keys(state.config.permissions ?? {});
       notify(ctx, `Unknown profile '${profileName}'. Available: ${profiles.join(", ")}`, "error");
       return { ok: false, profiles };
     }
     state.activeProfile = profileName;
     state.sessionAllows.clear();
-    auditEvent(state.config, { type: "profile_switch", profile: profileName }, state.cwd);
+    auditEvent(state.config, { type: "profile_switch", profile: profileName }, state.auditFile);
     notify(ctx, `pi-perm profile: ${profileName}`);
     return { ok: true, activeProfile: profileName };
   }

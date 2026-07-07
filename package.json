@@ -1,6 +1,6 @@
 {
   "name": "pi-perm",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Config-driven Pi sandbox and permission extension using sandbox-runtime.",
   "type": "module",
   "license": "MIT",

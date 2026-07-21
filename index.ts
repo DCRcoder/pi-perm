@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as PiAgent from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPiPermExtension } from "./core/extension.ts";
@@ -8,9 +9,17 @@ const extensionRoot = path.dirname(fileURLToPath(import.meta.url));
 
 export default function (pi: ExtensionAPI) {
   const extension = createPiPermExtension({ extensionRoot, events: pi.events });
+  const createBashToolDefinition = (PiAgent as any).createBashToolDefinition;
+
+  if (typeof createBashToolDefinition === "function") {
+    pi.registerTool(createBashToolDefinition(extension.state.cwd, {
+      spawnHook: extension.createBashSpawnHook()
+    }));
+  }
 
   pi.on("session_start", async (_event, ctx) => {
-    ctx.ui.notify(`pi-perm loaded: ${extension.state.activeProfile}`, "info");
+    const bashWrapStatus = typeof createBashToolDefinition === "function" ? "bash spawnHook active" : "bash spawnHook unavailable";
+    ctx.ui.notify(`pi-perm loaded: ${extension.state.activeProfile} (${bashWrapStatus})`, "info");
   });
 
   pi.on("tool_call", async (event, ctx) => {

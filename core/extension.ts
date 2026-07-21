@@ -17,6 +17,7 @@ export function createPiPermExtension(options: any = {}) {
     srtSettingsDir: resolveSrtSettingsDir(loaded.config, runtimeBaseDir),
     auditFile,
     now: options.now ?? (() => Date.now()),
+    srtCounter: 0,
     commandExists: options.commandExists ?? commandExists,
     events: options.events,
     sessionAllows: new Map<string, { lastUsedAt: number }>()
@@ -26,6 +27,9 @@ export function createPiPermExtension(options: any = {}) {
     state,
     async handleToolCall(event, ctx = {}) {
       return handleToolCall(state, event, ctx);
+    },
+    createBashSpawnHook() {
+      return createBashSpawnHook(state);
     },
     handlePiPermCommand(args, ctx = {}) {
       return handlePiPermCommand(state, args, ctx);
@@ -96,12 +100,24 @@ export async function handleToolCall(state: any, event: any, ctx: any = {}) {
       ctx.ui?.notify?.(reason, "error");
       return { block: true, reason };
     }
-    const settingsPath = writeSrtSettings({ profile, settingsDir: state.srtSettingsDir, toolCallId: event.toolCallId ?? "bash" });
-    event.input.command = wrapCommandWithSrt(input.command, settingsPath, decision.policy.srtBinary ?? "srt");
-    auditEvent(state.config, { type: "srt_settings", toolName, settingsPath: formatAuditPath(state.cwd, settingsPath) }, state.auditFile);
   }
 
   return undefined;
+}
+
+export function createBashSpawnHook(state: any) {
+  return (context: any) => {
+    const profile = getActiveProfile(state);
+    const bashPolicy = state.config.tools?.bash ?? {};
+    if (!bashPolicy.wrapWithSrt) return context;
+    const toolCallId = `bash-${state.now()}-${++state.srtCounter}`;
+    const settingsPath = writeSrtSettings({ profile, settingsDir: state.srtSettingsDir, toolCallId });
+    auditEvent(state.config, { type: "srt_settings", toolName: "bash", settingsPath: formatAuditPath(state.cwd, settingsPath) }, state.auditFile);
+    return {
+      ...context,
+      command: wrapCommandWithSrt(context.command, settingsPath, bashPolicy.srtBinary ?? "srt")
+    };
+  };
 }
 
 export function handlePiPermCommand(state: any, args = "", ctx: any = {}) {

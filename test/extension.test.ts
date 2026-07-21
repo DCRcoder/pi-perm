@@ -95,7 +95,7 @@ confirm = ["git push"]
 enabled = false
 `;
 
-test("handleToolCall wraps bash command with srt when configured", async () => {
+test("handleToolCall validates srt without mutating bash tool input", async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-ext-"));
   const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-runtime-base-"));
   const root = cwd;
@@ -123,13 +123,12 @@ settingsDir = "runtime"
   const event = { toolName: "bash", toolCallId: "abc", input: { command: "echo ok" } };
   const result = await extension.handleToolCall(event, {});
   assert.equal(result, undefined);
-  assert.match(event.input.command, /^srt --settings /);
-  assert.match(event.input.command, / echo ok$/);
-  assert.equal(fs.existsSync(path.join(runtimeBaseDir, "runtime", "abc.srt-settings.json")), true);
+  assert.equal(event.input.command, "echo ok");
+  assert.equal(fs.existsSync(path.join(runtimeBaseDir, "runtime", "abc.srt-settings.json")), false);
   assert.equal(fs.existsSync(path.join(cwd, "runtime")), false);
 });
 
-test("relative runtime settingsDir is resolved under runtime base dir", async () => {
+test("bash spawnHook wraps command with srt and writes settings under runtime base dir", async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-ext-"));
   const runtimeBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-runtime-base-"));
   const root = cwd;
@@ -156,7 +155,13 @@ settingsDir = "state/srt"
   const extension = createPiPermExtension({ cwd, extensionRoot: root, userPath: path.join(cwd, "missing.json"), runtimeBaseDir, commandExists: () => true });
   const event = { toolName: "bash", toolCallId: "nested", input: { command: "echo ok" } };
   assert.equal(await extension.handleToolCall(event, {}), undefined);
-  assert.equal(fs.existsSync(path.join(runtimeBaseDir, "state/srt", "nested.srt-settings.json")), true);
+  const hook = extension.createBashSpawnHook();
+  const wrapped = hook({ command: event.input.command, cwd, env: { FOO: "bar" } });
+  assert.match(wrapped.command, /^srt --settings /);
+  assert.match(wrapped.command, / echo ok$/);
+  assert.equal(wrapped.cwd, cwd);
+  assert.deepEqual(wrapped.env, { FOO: "bar" });
+  assert.equal(fs.readdirSync(path.join(runtimeBaseDir, "state/srt")).length, 1);
   assert.equal(fs.existsSync(path.join(cwd, "state")), false);
 });
 

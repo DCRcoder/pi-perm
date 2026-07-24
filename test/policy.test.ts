@@ -322,3 +322,108 @@ test("evaluateFileAccess allows write on cwd-internal path with multiple targets
   const decision = evaluateFileAccess({ config: cfg, profile: cfg.profiles.workspace, toolName: "write", input: { path: "src/a.ts", file_path: "src/b.ts" }, cwd });
   assert.equal(decision.action, "allow");
 });
+
+test("SPEC External file write confirmation: write outside permission profile confirms even when defaultAction allows", () => {
+  const cwd = "/home/user/project";
+  const profileWithEffectivePermissions = {
+    effectivePermissionProfile: {
+      name: "workspace",
+      filesystem: {
+        entries: [
+          { scope: ":workspace_roots", path: ".", access: "write" },
+          { scope: ":workspace_roots", path: "**/*.env", access: "deny" }
+        ]
+      },
+      network: { enabled: false }
+    }
+  };
+  const cfg = { tools: { write: { mode: "enforce", defaultAction: "allow", pathFields: ["path"] } } };
+
+  const decision = evaluateFileAccess({
+    config: cfg,
+    profile: profileWithEffectivePermissions,
+    toolName: "write",
+    input: { path: "/home/user/other-repo/README.md" },
+    cwd
+  });
+
+  assert.equal(decision.action, "confirm");
+  assert.equal(decision.rule.id, "external-file-write-boundary");
+  assert.equal(decision.target, "/home/user/other-repo/README.md");
+});
+
+test("SPEC External file write confirmation: literal special-prefix workspace paths stay writable", () => {
+  const cwd = "/home/user/project";
+  const profileWithEffectivePermissions = {
+    effectivePermissionProfile: {
+      name: "workspace",
+      filesystem: { entries: [{ scope: ":workspace_roots", path: ".", access: "write" }] },
+      network: { enabled: false }
+    }
+  };
+  const cfg = { tools: { write: { mode: "enforce", defaultAction: "allow", pathFields: ["path"] } } };
+
+  assert.equal(
+    evaluateFileAccess({ config: cfg, profile: profileWithEffectivePermissions, toolName: "write", input: { path: "~backup.md" }, cwd }).action,
+    "allow"
+  );
+  assert.equal(
+    evaluateFileAccess({ config: cfg, profile: profileWithEffectivePermissions, toolName: "write", input: { path: "$schema.json" }, cwd }).action,
+    "allow"
+  );
+});
+
+test("SPEC External file write confirmation: explicit external write allow bypasses confirmation", () => {
+  const cwd = "/home/user/project";
+  const profileWithEffectivePermissions = {
+    effectivePermissionProfile: {
+      name: "workspace",
+      filesystem: {
+        entries: [
+          { scope: ":workspace_roots", path: ".", access: "write" },
+          { scope: "path", path: "/home/user/other-repo", access: "write" }
+        ]
+      },
+      network: { enabled: false }
+    }
+  };
+  const cfg = { tools: { edit: { mode: "enforce", defaultAction: "confirm", pathFields: ["path"] } } };
+
+  const decision = evaluateFileAccess({
+    config: cfg,
+    profile: profileWithEffectivePermissions,
+    toolName: "edit",
+    input: { path: "/home/user/other-repo/README.md" },
+    cwd
+  });
+
+  assert.equal(decision.action, "allow");
+});
+
+test("SPEC Deny precedes external file write confirmation", () => {
+  const cwd = "/home/user/project";
+  const profileWithEffectivePermissions = {
+    effectivePermissionProfile: {
+      name: "workspace",
+      filesystem: {
+        entries: [
+          { scope: ":workspace_roots", path: ".", access: "write" },
+          { scope: ":root", path: "**/*.secret", access: "deny" }
+        ]
+      },
+      network: { enabled: false }
+    }
+  };
+  const cfg = { tools: { edit: { mode: "enforce", defaultAction: "allow", pathFields: ["path"] } } };
+
+  const decision = evaluateFileAccess({
+    config: cfg,
+    profile: profileWithEffectivePermissions,
+    toolName: "edit",
+    input: { path: "/home/user/other-repo/token.secret" },
+    cwd
+  });
+
+  assert.equal(decision.action, "block");
+  assert.match(decision.reason, /Path denied/);
+});

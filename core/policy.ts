@@ -188,6 +188,14 @@ export function evaluateFileAccess({ config, profile, toolName, input, cwd = pro
     if (["write", "edit"].includes(toolName)) {
       const allWritable = decisions.every((decision) => decision.access === "write");
       if (allWritable) return { action: "allow", policy, target: targets.join(", "), reason: "Path writable by permission profile" };
+      return {
+        action: "confirm",
+        policy,
+        rule: { id: "external-file-write-boundary" },
+        targets,
+        target: targets.join(", "),
+        reason: `Path requires user confirmation by permission profile: ${targets.join(", ")}`
+      };
     }
     const decision = evaluateToolCall({ config, profile, toolName, input });
     return { ...decision, target: decision.target ?? targets.join(", ") };
@@ -262,7 +270,7 @@ export function resolveFilesystemAccess(permissionProfile: any, target: string, 
   const matches = [];
   for (const entry of permissionProfile?.filesystem?.entries ?? []) {
     const pattern = entryPattern(entry);
-    const normalized = normalizeForMatch(target, cwd);
+    const normalized = normalizeEntryTargetForMatch(entry, target, cwd);
     if (pattern !== undefined && entryMatches(pattern, normalized)) matches.push(entry);
   }
   if (matches.length === 0) return undefined;
@@ -270,7 +278,17 @@ export function resolveFilesystemAccess(permissionProfile: any, target: string, 
   return matches[0].access;
 }
 
-function entryMatches(pattern: string, target: string) {
+function normalizeEntryTargetForMatch(entry: any, target: string, cwd: string) {
+  if (entry.scope !== ":workspace_roots") return normalizeForMatch(target, cwd);
+  if (!target || target === "~" || target.startsWith("~/")) return undefined;
+  const absolute = path.resolve(cwd, target);
+  const relative = path.relative(cwd, absolute);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+  return relative || ".";
+}
+
+function entryMatches(pattern: string, target: string | undefined) {
+  if (target === undefined) return false;
   if (globMatch(pattern, target)) return true;
   if (!pattern.includes("*") && pattern !== "." && globMatch(`${pattern}/**`, target)) return true;
   return false;

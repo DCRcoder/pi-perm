@@ -16,6 +16,14 @@ function createExtensionFixture(configBody: string, options: Record<string, unkn
   return createPiPermExtension({ cwd, extensionRoot: root, userPath: path.join(cwd, "missing.json"), commandExists: () => true, ...options });
 }
 
+function createExtensionFixtureWithGeneratedConfig(generateConfig: (cwd: string) => string, options: Record<string, unknown> = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-perm-session-"));
+  const root = cwd;
+  fs.mkdirSync(path.join(root, "defaults"), { recursive: true });
+  fs.writeFileSync(path.join(root, "defaults/base.toml"), generateConfig(cwd));
+  return createPiPermExtension({ cwd, extensionRoot: root, userPath: path.join(cwd, "missing.json"), commandExists: () => true, ...options });
+}
+
 function permissionToml(name = "workspace", rootAccess = "write") {
   return `
 activePermissionProfile = "${name}"
@@ -72,6 +80,24 @@ ${permissionToml("workspace", "read")}
 [tools.write]
 mode = "enforce"
 defaultAction = "confirm"
+pathFields = ["path"]
+
+[audit]
+enabled = false
+`;
+
+const confirmExternalFileConfig = `
+version = 1
+${permissionToml("workspace", "write")}
+
+[tools.write]
+mode = "enforce"
+defaultAction = "allow"
+pathFields = ["path"]
+
+[tools.edit]
+mode = "enforce"
+defaultAction = "allow"
 pathFields = ["path"]
 
 [audit]
@@ -311,6 +337,157 @@ test("confirm allow session for file tools is scoped by path target", async () =
   assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: "a.txt" } }, ctx), undefined);
   assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: "b.txt" } }, ctx), undefined);
   assert.equal(prompts, 2);
+});
+
+test("SPEC External file write confirmation: allow once asks again for same external target", async () => {
+  const extension = createExtensionFixture(confirmExternalFileConfig);
+  const externalPath = path.join(path.dirname(extension.state.cwd), "other-repo", "README.md");
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async (_title: string, options: string[]) => {
+        prompts += 1;
+        assert.deepEqual(options, ["Deny", "Allow once", "Always allow this file this session", "Always allow this folder this session"]);
+        return "Allow once";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: externalPath } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: externalPath } }, ctx), undefined);
+  assert.equal(prompts, 2);
+});
+
+test("SPEC External file write confirmation: file session allow skips same external target only", async () => {
+  const extension = createExtensionFixture(confirmExternalFileConfig);
+  const externalDir = path.join(path.dirname(extension.state.cwd), "other-repo");
+  const firstPath = path.join(externalDir, "README.md");
+  const secondPath = path.join(externalDir, "CHANGELOG.md");
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async () => {
+        prompts += 1;
+        return "Always allow this file this session";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "edit", input: { path: firstPath } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "edit", input: { path: firstPath } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "edit", input: { path: secondPath } }, ctx), undefined);
+  assert.equal(prompts, 2);
+});
+
+test("SPEC External file write confirmation: folder session allow skips same external folder", async () => {
+  const extension = createExtensionFixture(confirmExternalFileConfig);
+  const externalDir = path.join(path.dirname(extension.state.cwd), "other-repo");
+  const firstPath = path.join(externalDir, "README.md");
+  const secondPath = path.join(externalDir, "CHANGELOG.md");
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async (_title: string, options: string[]) => {
+        prompts += 1;
+        assert.deepEqual(options, ["Deny", "Allow once", "Always allow this file this session", "Always allow this folder this session"]);
+        return "Always allow this folder this session";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: firstPath } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: secondPath } }, ctx), undefined);
+  assert.equal(prompts, 1);
+});
+
+test("SPEC External file write confirmation: folder session allow does not cross folders", async () => {
+  const extension = createExtensionFixture(confirmExternalFileConfig);
+  const baseDir = path.dirname(extension.state.cwd);
+  const firstPath = path.join(baseDir, "other-repo", "README.md");
+  const secondPath = path.join(baseDir, "another-repo", "README.md");
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async () => {
+        prompts += 1;
+        return "Always allow this folder this session";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "edit", input: { path: firstPath } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "edit", input: { path: secondPath } }, ctx), undefined);
+  assert.equal(prompts, 2);
+});
+
+test("SPEC External file write confirmation: folder session allow is ignored for multiple folders", async () => {
+  const extension = createExtensionFixture(confirmExternalFileConfig);
+  const baseDir = path.dirname(extension.state.cwd);
+  const firstPath = path.join(baseDir, "other-repo", "README.md");
+  const secondPath = path.join(baseDir, "another-repo", "README.md");
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async (_title: string, options: string[]) => {
+        prompts += 1;
+        if (prompts === 1) {
+          assert.deepEqual(options, ["Deny", "Allow once", "Always allow this file this session"]);
+        } else {
+          assert.deepEqual(options, ["Deny", "Allow once", "Always allow this file this session", "Always allow this folder this session"]);
+        }
+        return "Always allow this folder this session";
+      }
+    }
+  };
+
+  assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: [firstPath, secondPath] } }, ctx), undefined);
+  assert.equal(await extension.handleToolCall({ toolName: "write", input: { path: firstPath } }, ctx), undefined);
+  assert.equal(prompts, 2);
+});
+
+test("SPEC External file write confirmation: denied external target does not prompt", async () => {
+  const extension = createExtensionFixtureWithGeneratedConfig((cwd) => {
+    const deniedDir = path.join(path.dirname(cwd), "other-repo");
+    return `
+version = 1
+activePermissionProfile = "workspace"
+
+[profiles.workspace]
+description = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+"${deniedDir}" = "deny"
+
+[permissions.workspace.filesystem.":workspace_roots"]
+"." = "write"
+
+[permissions.workspace.network]
+enabled = false
+
+[tools.write]
+mode = "enforce"
+defaultAction = "allow"
+pathFields = ["path"]
+
+[audit]
+enabled = false
+`;
+  });
+  const deniedPath = path.join(path.dirname(extension.state.cwd), "other-repo", "blocked.txt");
+  let prompts = 0;
+  const ctx = {
+    ui: {
+      select: async () => {
+        prompts += 1;
+        return "Allow once";
+      }
+    }
+  };
+
+  const result = await extension.handleToolCall({ toolName: "write", input: { path: deniedPath } }, ctx);
+  assert.equal(result?.block, true);
+  assert.equal(prompts, 0);
 });
 
 test("profile switch clears session allow cache", async () => {

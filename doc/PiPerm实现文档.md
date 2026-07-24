@@ -222,12 +222,12 @@ Pi Agent 触发 `session_start` 后，[index.ts](../index.ts) 通过 `ctx.ui.not
 每次工具调用都会进入 [core/extension.ts](../core/extension.ts) 的 `handleToolCall()`。核心判断顺序如下：
 
 1. 根据当前 `state.activeProfile` 读取 active permission profile。
-2. 文件类工具走 `evaluateFileAccess()`，按 `deny > write > read` 判定路径权限。
+2. 文件类工具走 `evaluateFileAccess()`，按 `deny > write > read` 判定路径权限；`write` / `edit` 访问未被当前 permission profile 明确允许且未被 deny 的路径时，会进入确认流程。
 3. 其他工具走 `evaluateToolCall()`。
 4. `bash` 会先匹配显式 `rules`，再匹配 `operations`，最后按 permission profile 检查网络边界。
 5. 结果为 `block` 时直接阻断。
 6. 结果为 `confirm` 时先检查当前 session 授权缓存；命中缓存则直接放行并写审计。
-7. 未命中缓存时调用 Pi UI 确认，支持“拒绝 / 允许一次 / 本 session 始终允许”。等待用户输入期间会通过 Pi UI 状态 API 显示 blocked 风格状态，并在存在 Herdr Pi integration 时通过 Pi event bus 发出 `herdr:blocked`；旧环境只有 `ctx.ui.confirm` 时，确认成功只按“允许一次”处理。
+7. 未命中缓存时调用 Pi UI 确认，支持“拒绝 / 允许一次 / 本 session 始终允许”。外部文件写入确认会进一步区分“本 session 始终允许当前文件”和“本 session 始终允许当前文件夹”。等待用户输入期间会通过 Pi UI 状态 API 显示 blocked 风格状态，并在存在 Herdr Pi integration 时通过 Pi event bus 发出 `herdr:blocked`；旧环境只有 `ctx.ui.confirm` 时，确认成功只按“允许一次”处理。
 8. 如果是 `bash` 且 `wrapWithSrt = true`，只检查 `srtBinary` 是否存在；实际 SRT settings 生成和命令改写发生在覆盖版 bash 工具的 `spawnHook` 中。
 
 ### 5.2.1 Session 级授权
@@ -235,6 +235,8 @@ Pi Agent 触发 `session_start` 后，[index.ts](../index.ts) 通过 `ctx.ui.not
 [core/extension.ts](../core/extension.ts) 在 extension state 中维护 `sessionAllows` 内存 Map。用户选择“本 session 始终允许”后，系统按当前 active profile、工具名、命中的规则 ID 或操作 ID、目标摘要生成授权 key，并记录最近使用时间。
 
 该授权不会写入 `config.toml`、`config.json` 或用户配置，因此重启 Pi session 后自动失效。每次工具调用前系统会按 `runtime.sessionAllowTtlMs` 清理空闲过期授权；重复命中相同 key 且未过期时，系统跳过确认、刷新最近使用时间并记录 `session_allow_hit` 审计事件。不同 profile、不同命令、不同规则或不同路径仍会重新确认。执行 `/pi-perm use <profile>` 切换 profile 时，系统会清空当前 session 授权缓存。
+
+外部目录写入复用同一套 session 授权机制。`write` 或 `edit` 访问当前 workspace 外部路径且未命中 profile allow/deny 时，会使用 `external-file-write-boundary` 规则请求确认。用户选择“允许一次”只放行当前工具调用；选择“本 session 始终允许当前文件”后，只对相同 active profile、相同工具和相同目标路径摘要复用授权；选择“本 session 始终允许当前文件夹”后，同一文件夹下后续外部 `write/edit` 调用可跳过确认。文件夹级授权不跨文件夹，多目标分布在不同文件夹时不提供文件夹级授权，所有 session 授权都不会写入 permission profile。
 
 确认提示由 `core/extension.ts:confirmDecision()` 统一包裹 UI 状态保护。扩展初始化时会从 `index.ts` 注入 `pi.events`。显示选择器前会调用 `events.emit("herdr:blocked", { active: true, label })`、`ctx.ui.setStatus("pi-perm", "blocked: waiting for permission")`、`ctx.ui.setWorkingMessage(...)` 和 `ctx.ui.setWorkingIndicator({ frames: ["■"] })`；无论用户选择、取消还是 UI 抛错，都会在 `finally` 中发送 `active: false` 并恢复默认状态。缺少 event bus 或 Herdr integration 时不影响权限确认。Herdr 的 `done` 是 `idle + pane 未查看` 的 UI 派生状态，pi-perm 不直接发送 done 事件。
 
@@ -336,6 +338,7 @@ srt --settings ~/.pi/agent/extensions/pi-perm/runtime/bash-<timestamp>-<counter>
 - 配置合并、TOML 优先和原命令模式展开：[test/config.test.ts](../test/config.test.ts)
 - 命令操作模式与 preset：[test/operations.test.ts](../test/operations.test.ts)
 - 工具规则、文件路径和命令匹配：[test/policy.test.ts](../test/policy.test.ts)
+- 外部文件写入确认、文件级 / 文件夹级 session 授权和路径隔离：[test/policy.test.ts](../test/policy.test.ts)、[test/extension.test.ts](../test/extension.test.ts)
 - SRT settings 与命令包装：[test/srt.test.ts](../test/srt.test.ts)
 - extension 命令和工具调用处理：[test/extension.test.ts](../test/extension.test.ts)
 - extension 入口注册高版本 bash 覆盖工具：[test/index.test.ts](../test/index.test.ts)
